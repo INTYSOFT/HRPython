@@ -27,7 +27,10 @@ class OMRConfig:
     dni_columns: int = 8
     questions: int = 100
     answer_labels: Sequence[str] = ("A", "B", "C", "D", "E")
-    dni_vertical_band: tuple[float, float] = (0.02, 1.32)
+    # Banda vertical "de respaldo" para el DNI cuando no hay mejores pistas.
+    # Por defecto se toma únicamente el 8 % - 32 % de la altura total, que es
+    # donde viven los dígitos en las hojas de referencia.
+    dni_vertical_band: tuple[float, float] = (0.08, 0.32)
     answer_vertical_band: tuple[float, float] = (0.34, 0.9)
     sync_band_height_ratio: float = 0.18
     min_rect_area_ratio: float = 0.0005
