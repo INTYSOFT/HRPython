@@ -226,18 +226,33 @@ class MainWindow(QMainWindow):
         if pix.isNull():
             self.image_label.setText("No se pudo cargar la imagen")
             return
-        self.image_label.setPixmap(pix.scaled(self.image_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
+        target_size = self.image_label.size()
+        if target_size.isEmpty():
+            self.image_label.setPixmap(pix)
+            return
+        self.image_label.setPixmap(
+            pix.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
     def resizeEvent(self, event) -> None:  # pragma: no cover - actualización visual
         super().resizeEvent(event)
-        if self.image_label.pixmap():
-            self.image_label.setPixmap(
-                self.image_label.pixmap().scaled(
-                    self.image_label.size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                )
+        pixmap = self.image_label.pixmap()
+        if not pixmap or pixmap.isNull():
+            return
+        target_size = self.image_label.size()
+        if target_size.isEmpty():
+            return
+        self.image_label.setPixmap(
+            pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
             )
+        )
 
     def _llenar_tabla_respuestas(self, respuestas: List[Respuesta]) -> None:
         self.table_answers.setRowCount(0)
