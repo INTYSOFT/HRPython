@@ -32,6 +32,8 @@ class OMRConfig:
     min_rect_area_ratio: float = 0.0005
     cell_activation_threshold: float = 0.45
     ambiguity_margin: float = 0.15
+    dni_region_dir: Path | None = Path("d:/deputrar/dni")
+    respuestas_region_dir: Path | None = Path("d:/deputrar/respuesta")
 
 
 def procesar_pdf(pdf_path: str | Path, cache_dir: str | Path | None = None, config: OMRConfig | None = None) -> List[AlumnoHoja]:
@@ -74,11 +76,12 @@ def procesar_pdf(pdf_path: str | Path, cache_dir: str | Path | None = None, conf
             )
             continue
 
-        dni = _leer_dni(image_bgr, anchors[: config.dni_columns], config)
+        dni = _leer_dni(image_bgr, anchors[: config.dni_columns], config, index)
         respuestas = _leer_respuestas(
             image_bgr,
             anchors[config.dni_columns :],
             config,
+            index,
         )
         resultados.append(
             AlumnoHoja(pagina=index, dni=dni, respuestas=respuestas, imagen_path=img_path)
@@ -133,7 +136,12 @@ def _detectar_rectangulos_sync(image: np.ndarray, config: OMRConfig) -> List[tup
     return rects
 
 
-def _leer_dni(image: np.ndarray, columnas: Sequence[tuple[int, int, int, int]], config: OMRConfig) -> str:
+def _leer_dni(
+    image: np.ndarray,
+    columnas: Sequence[tuple[int, int, int, int]],
+    config: OMRConfig,
+    pagina: int,
+) -> str:
     """Lee los dígitos del DNI aprovechando las columnas detectadas."""
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -141,6 +149,7 @@ def _leer_dni(image: np.ndarray, columnas: Sequence[tuple[int, int, int, int]], 
     y0 = int(h * config.dni_vertical_band[0])
     y1 = int(h * config.dni_vertical_band[1])
     banda = gray[y0:y1, :]
+    _guardar_region_debug(banda, config.dni_region_dir, f"pagina_{pagina:03d}_dni.png")
     digits = []
     column_width = _estimacion_ancho_columnas(columnas)
 
@@ -159,6 +168,7 @@ def _leer_respuestas(
     image: np.ndarray,
     columnas: Sequence[tuple[int, int, int, int]],
     config: OMRConfig,
+    pagina: int,
 ) -> List[Respuesta]:
     """Procesa el bloque de preguntas y devuelve ``Respuesta`` por pregunta."""
 
@@ -170,6 +180,11 @@ def _leer_respuestas(
     y0 = int(h * config.answer_vertical_band[0])
     y1 = int(h * config.answer_vertical_band[1])
     banda = gray[y0:y1, :]
+    _guardar_region_debug(
+        banda,
+        config.respuestas_region_dir,
+        f"pagina_{pagina:03d}_respuestas.png",
+    )
     answers_per_column = int(np.ceil(config.questions / len(columnas)))
     column_width = _estimacion_ancho_columnas(columnas)
     resultados: List[Respuesta] = []
@@ -256,6 +271,17 @@ def _clasificar_alternativa(
         return (labels[best_idx], "MULTIPLES", best_score)
 
     return (labels[best_idx], "OK", best_score)
+
+
+def _guardar_region_debug(region: np.ndarray, directory: Path | None, filename: str) -> None:
+    """Guarda la imagen de una región de interés si se proporcionó un directorio."""
+
+    if directory is None:
+        return
+
+    path = Path(directory)
+    path.mkdir(parents=True, exist_ok=True)
+    cv2.imwrite(str(path / filename), region)
 
 
 __all__ = ["procesar_pdf", "OMRConfig"]
