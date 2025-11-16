@@ -32,6 +32,10 @@ class OMRConfig:
     min_rect_area_ratio: float = 0.0005
     cell_activation_threshold: float = 0.45
     ambiguity_margin: float = 0.15
+    profile_threshold_dni: float = 0.32
+    profile_threshold_respuestas: float = 0.28
+    profile_margin_ratio: float = 0.04
+    x_band_padding_ratio: float = 0.12
     dni_region_dir: Path | None = Path("d:/deputrar/dni")
     respuestas_region_dir: Path | None = Path("d:/deputrar/respuesta")
 
@@ -146,8 +150,18 @@ def _leer_dni(
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    y0 = int(h * config.dni_vertical_band[0])
-    y1 = int(h * config.dni_vertical_band[1])
+    default_range = (
+        int(h * config.dni_vertical_band[0]),
+        int(h * config.dni_vertical_band[1]),
+    )
+    y0, y1 = _banda_vertical_desde_referencias(
+        gray,
+        columnas,
+        config.profile_threshold_dni,
+        config.profile_margin_ratio,
+        default_range,
+        config.x_band_padding_ratio,
+    )
     banda = gray[y0:y1, :]
     _guardar_region_debug(banda, config.dni_region_dir, f"pagina_{pagina:03d}_dni.png")
     digits = []
@@ -177,8 +191,20 @@ def _leer_respuestas(
 
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     h, w = gray.shape
-    y0 = int(h * config.answer_vertical_band[0])
-    y1 = int(h * config.answer_vertical_band[1])
+    default_range = (
+        int(h * config.answer_vertical_band[0]),
+        int(h * config.answer_vertical_band[1]),
+    )
+    y0, y1 = _banda_vertical_desde_referencias(
+        gray,
+        columnas,
+        config.profile_threshold_respuestas,
+        config.profile_margin_ratio,
+        default_range,
+        config.x_band_padding_ratio,
+    )
+    if y1 - y0 < 10:
+        return []
     banda = gray[y0:y1, :]
     _guardar_region_debug(
         banda,
@@ -271,6 +297,72 @@ def _clasificar_alternativa(
         return (labels[best_idx], "MULTIPLES", best_score)
 
     return (labels[best_idx], "OK", best_score)
+
+
+def _banda_vertical_desde_referencias(
+    gray: np.ndarray,
+    columnas: Sequence[tuple[int, int, int, int]],
+    threshold: float,
+    margin_ratio: float,
+    default_range: tuple[int, int],
+    padding_ratio: float,
+) -> tuple[int, int]:
+    """Calcula automáticamente la banda vertical donde viven las burbujas."""
+
+    if not columnas:
+        return default_range
+
+    height, width = gray.shape
+    x_min = min(col[0] for col in columnas)
+    x_max = max(col[0] + col[2] for col in columnas)
+    padding = int((x_max - x_min) * padding_ratio)
+    x0 = max(x_min - padding, 0)
+    x1 = min(x_max + padding, width)
+    if x1 <= x0:
+        return default_range
+
+    roi = gray[:, x0:x1]
+    inverted = cv2.bitwise_not(roi)
+    profile = inverted.mean(axis=1)
+    span = profile.max() - profile.min()
+    if span <= 1e-6:
+        return default_range
+    normalized = (profile - profile.min()) / span
+    mask = normalized > threshold
+    start, end = _mayor_segmento_activo(mask)
+    if end - start <= 0:
+        return default_range
+
+    margin = int((end - start) * margin_ratio)
+    return (max(start - margin, 0), min(end + margin, height))
+
+
+def _mayor_segmento_activo(mask: np.ndarray) -> tuple[int, int]:
+    """Devuelve el tramo más largo con ``True`` dentro de ``mask``."""
+
+    best_start = 0
+    best_len = 0
+    current_start = None
+
+    for idx, value in enumerate(mask.tolist()):
+        if value:
+            if current_start is None:
+                current_start = idx
+            continue
+        if current_start is not None:
+            length = idx - current_start
+            if length > best_len:
+                best_len = length
+                best_start = current_start
+            current_start = None
+
+    if current_start is not None:
+        length = len(mask) - current_start
+        if length > best_len:
+            best_len = length
+            best_start = current_start
+
+    return best_start, best_start + best_len
 
 
 def _guardar_region_debug(region: np.ndarray, directory: Path | None, filename: str) -> None:
