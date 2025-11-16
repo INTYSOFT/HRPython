@@ -94,6 +94,20 @@ def procesar_pdf(pdf_path: str | Path, cache_dir: str | Path | None = None, conf
     return resultados
 
 
+def _normalized_inverted(region: np.ndarray) -> np.ndarray:
+    """Devuelve la región invertida y normalizada entre 0 y 1.
+
+    Cuando la región está vacía (ancho o alto cero) OpenCV devuelve ``None`` al
+    aplicar ``bitwise_not``. Para evitar los errores posteriores y mantener el
+    flujo del algoritmo, se devuelve una matriz pequeña llena de ceros.
+    """
+
+    if region.size == 0:
+        return np.zeros((1, 1), dtype=np.float32)
+    inverted = cv2.bitwise_not(region)
+    return inverted.astype(np.float32) / 255.0
+
+
 def _render_page(page: fitz.Page, cache_dir: Path, index: int, dpi: int) -> tuple[np.ndarray, Path]:
     """Renderiza una página en imagen BGR (formato OpenCV) y la guarda."""
 
@@ -203,7 +217,7 @@ def _leer_respuestas(
         default_range,
         config.x_band_padding_ratio,
     )
-    if y1 - y0 < 10:
+    if y1 - y0 < 1:
         return []
     banda = gray[y0:y1, :]
     _guardar_region_debug(
@@ -214,6 +228,8 @@ def _leer_respuestas(
     answers_per_column = int(np.ceil(config.questions / len(columnas)))
     column_width = _estimacion_ancho_columnas(columnas)
     resultados: List[Respuesta] = []
+    band_height = banda.shape[0]
+    row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
 
     for question_index in range(config.questions):
         column_index = min(question_index // answers_per_column, len(columnas) - 1)
@@ -221,10 +237,15 @@ def _leer_respuestas(
         x_center = col[0] + col[2] // 2
         x0 = max(x_center - column_width // 2, 0)
         x1 = min(x_center + column_width // 2, w)
+        if x1 <= x0:
+            x0 = max(min(x_center, w - 1), 0)
+            x1 = min(x0 + 1, w)
 
-        row_height = (y1 - y0) / answers_per_column
-        local_top = int((question_index % answers_per_column) * row_height)
-        local_bottom = int(local_top + row_height)
+        row_idx = question_index % answers_per_column
+        local_top = int(np.floor(row_boundaries[row_idx]))
+        local_bottom = int(np.ceil(row_boundaries[row_idx + 1]))
+        if local_bottom <= local_top:
+            local_bottom = min(local_top + 1, band_height)
 
         sub = banda[local_top:local_bottom, x0:x1]
         alternativa, estado, intensidad = _clasificar_alternativa(sub, config.answer_labels, config)
@@ -253,16 +274,17 @@ def _estimacion_ancho_columnas(columnas: Sequence[tuple[int, int, int, int]]) ->
 def _clasificar_digito(column_img: np.ndarray) -> int:
     """Divide la columna en 10 celdas y escoge la de mayor tinta."""
 
-    inverted = cv2.bitwise_not(column_img)
-    normalized = inverted / 255.0
+    normalized = _normalized_inverted(column_img)
     height = normalized.shape[0]
-    cell_height = height // 10 or 1
+    boundaries = np.linspace(0, height, 11, dtype=int)
     scores = []
     for i in range(10):
-        start = i * cell_height
-        end = (i + 1) * cell_height if i < 9 else height
+        start = boundaries[i]
+        end = boundaries[i + 1]
+        if end <= start:
+            end = min(start + 1, height)
         cell = normalized[start:end, :]
-        scores.append(cell.mean())
+        scores.append(float(cell.mean()) if cell.size else 0.0)
     return int(np.argmax(scores))
 
 
@@ -274,16 +296,17 @@ def _clasificar_alternativa(
     """Determina la opción con más tinta y aplica reglas de negocio."""
 
     rows = len(labels)
-    inverted = cv2.bitwise_not(answer_img)
-    normalized = inverted / 255.0
+    normalized = _normalized_inverted(answer_img)
     height = normalized.shape[0]
-    cell_height = height // rows or 1
+    boundaries = np.linspace(0, height, rows + 1, dtype=int)
     scores = []
     for idx in range(rows):
-        start = idx * cell_height
-        end = (idx + 1) * cell_height if idx < rows - 1 else height
+        start = boundaries[idx]
+        end = boundaries[idx + 1]
+        if end <= start:
+            end = min(start + 1, height)
         cell = normalized[start:end, :]
-        scores.append(cell.mean())
+        scores.append(float(cell.mean()) if cell.size else 0.0)
 
     best_idx = int(np.argmax(scores))
     best_score = scores[best_idx]
