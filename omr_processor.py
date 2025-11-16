@@ -27,13 +27,13 @@ class OMRConfig:
     dni_columns: int = 8
     questions: int = 100
     answer_labels: Sequence[str] = ("A", "B", "C", "D", "E")
-    dni_vertical_band: tuple[float, float] = (0.08, 0.32)
+    dni_vertical_band: tuple[float, float] = (0.02, 1.32)
     answer_vertical_band: tuple[float, float] = (0.34, 0.9)
     sync_band_height_ratio: float = 0.18
     min_rect_area_ratio: float = 0.0005
     cell_activation_threshold: float = 0.45
     ambiguity_margin: float = 0.15
-    profile_threshold_dni: float = 0.32
+    profile_threshold_dni: float = .32
     profile_threshold_respuestas: float = 0.28
     profile_margin_ratio: float = 0.04
     x_band_padding_ratio: float = 0.12
