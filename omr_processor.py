@@ -349,14 +349,35 @@ def _banda_vertical_desde_referencias(
         return default_range
 
     roi = gray[:, x0:x1]
+    if roi.size == 0:
+        return default_range
+
+    # Realzar las zonas con burbujas (tinta gruesa) y suprimir texto fino.
     inverted = cv2.bitwise_not(roi)
-    profile = inverted.mean(axis=1)
+    blurred = cv2.GaussianBlur(inverted, (5, 5), 0)
+    _, binary = cv2.threshold(blurred, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+    kernel_width = max((x1 - x0) // 40, 1)
+    kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (kernel_width, 3))
+    enhanced = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+    profile = enhanced.mean(axis=1)
     span = profile.max() - profile.min()
     if span <= 1e-6:
         return default_range
     normalized = (profile - profile.min()) / span
     mask = normalized > threshold
-    start, end = _mayor_segmento_activo(mask)
+
+    # Se prioriza cualquier segmento que caiga dentro del rango esperado.
+    constrained_mask = mask.copy()
+    default_mask = np.zeros_like(mask, dtype=bool)
+    y0_default, y1_default = default_range
+    y0_default = max(min(y0_default, height), 0)
+    y1_default = max(min(y1_default, height), 0)
+    if y1_default > y0_default:
+        default_mask[y0_default:y1_default] = True
+        constrained_mask &= default_mask
+    start, end = _mayor_segmento_activo(constrained_mask)
+    if end - start <= 0:
+        start, end = _mayor_segmento_activo(mask)
     if end - start <= 0:
         return default_range
 
