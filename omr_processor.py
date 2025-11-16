@@ -10,6 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Sequence
+import cv2  # type: ignore
 
 import cv2
 import fitz  # PyMuPDF
@@ -23,8 +24,8 @@ class OMRConfig:
     """Parámetros del algoritmo OMR."""
 
     dpi: int = 200
-    dni_columns: int = 9
-    questions: int = 50
+    dni_columns: int = 8
+    questions: int = 100
     answer_labels: Sequence[str] = ("A", "B", "C", "D", "E")
     dni_vertical_band: tuple[float, float] = (0.08, 0.32)
     answer_vertical_band: tuple[float, float] = (0.34, 0.9)
@@ -36,8 +37,8 @@ class OMRConfig:
     profile_threshold_respuestas: float = 0.28
     profile_margin_ratio: float = 0.04
     x_band_padding_ratio: float = 0.12
-    dni_region_dir: Path | None = Path("d:/deputrar/dni")
-    respuestas_region_dir: Path | None = Path("d:/deputrar/respuesta")
+    dni_region_dir: Path | None = Path("d:/depurrar/dni")
+    respuestas_region_dir: Path | None = Path("d:/depurrar/respuesta")
 
 
 def procesar_pdf(pdf_path: str | Path, cache_dir: str | Path | None = None, config: OMRConfig | None = None) -> List[AlumnoHoja]:
