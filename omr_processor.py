@@ -544,7 +544,7 @@ def _calcular_filas_columna(
     base_boundaries: np.ndarray,
     config: OMRConfig,
 ) -> List[tuple[int, int]]:
-    """Devuelve [top, bottom) por fila afinando el centro con el perfil real."""
+    """Devuelve [top, bottom) por fila afinando los límites con el perfil real."""
 
     h_band, _ = banda.shape
     x0, x1 = x_range
@@ -562,29 +562,39 @@ def _calcular_filas_columna(
     else:
         profile = np.zeros((h_band,), dtype=np.float32)
 
-    row_windows: List[tuple[int, int]] = []
-    for idx in range(len(base_boundaries) - 1):
-        row_top = float(base_boundaries[idx])
-        row_bottom = float(base_boundaries[idx + 1])
-        row_height = max(row_bottom - row_top, 1.0)
-        predicted_center = (row_top + row_bottom) / 2.0
+    # Afinamos cada límite buscando los valles (zonas blancas) del perfil.
+    base_boundaries = np.asarray(base_boundaries, dtype=float)
+    row_height_est = float(np.median(np.diff(base_boundaries))) if len(base_boundaries) > 1 else 0.0
+    search_radius_default = max(int(row_height_est * 0.35), 5)
 
-        search_window = max(int(row_height * 0.35), 3)
-        start = int(max(predicted_center - search_window, 0))
-        end = int(min(predicted_center + search_window, h_band - 1))
+    adjusted_boundaries: List[int] = [0]
+    for idx in range(1, len(base_boundaries) - 1):
+        predicted_boundary = float(base_boundaries[idx])
+        search_radius = search_radius_default
+        if idx < len(base_boundaries) - 1:
+            next_height = float(base_boundaries[idx + 1] - base_boundaries[idx - 1]) / 2.0
+            search_radius = max(int(next_height * 0.35), search_radius)
+
+        start = int(max(predicted_boundary - search_radius, adjusted_boundaries[-1]))
+        end = int(min(predicted_boundary + search_radius, h_band - 1))
         if end <= start:
             end = min(start + 1, h_band - 1)
 
         segment = profile[start : end + 1]
-        offset = int(np.argmax(segment)) if segment.size else 0
-        center = start + offset
+        offset = int(np.argmin(segment)) if segment.size else 0
+        boundary = start + offset
 
-        half_height = max(int(row_height * 0.55), 6)
-        top = max(center - half_height, 0)
-        bottom = min(center + half_height, h_band)
+        boundary = max(boundary, adjusted_boundaries[-1] + 1)
+        adjusted_boundaries.append(boundary)
+
+    adjusted_boundaries.append(h_band)
+
+    row_windows: List[tuple[int, int]] = []
+    for i in range(len(adjusted_boundaries) - 1):
+        top = adjusted_boundaries[i]
+        bottom = adjusted_boundaries[i + 1]
         if bottom <= top:
             bottom = min(top + 1, h_band)
-
         row_windows.append((top, bottom))
 
     return row_windows
