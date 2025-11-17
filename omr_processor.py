@@ -479,36 +479,32 @@ def _leer_respuestas(
     # Limites “ideales” de cada fila (0..band_height)
     row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
 
+    # Calculamos ventanas verticales por columna basándonos en el perfil real
+    # de tinta. Esto permite que las líneas azules (grid de depuración) pasen
+    # exactamente junto a las burbujas marcadas, incluso con ligeras
+    # desalineaciones o inclinaciones de la hoja.
+    row_windows_por_columna: List[List[tuple[int, int]]] = []
+    for x0, x1 in x_ranges:
+        row_windows_por_columna.append(
+            _calcular_filas_columna(
+                banda,
+                (x0, x1),
+                row_boundaries,
+                config,
+            )
+        )
+
     for question_index in range(config.questions):
         # qué columna lógica (0..3)
         column_index = min(
             question_index // answers_per_column,
             len(columnas) - 1,
         )
-        col = columnas[column_index]
-        x_center = col[0] + col[2] // 2
-        x0 = max(x_center - column_width // 2, 0)
-        x1 = min(x_center + column_width // 2, w)
+        x0, x1 = x_ranges[column_index]
 
-        if x1 <= x0:
-            x0 = max(min(x_center, w - 1), 0)
-            x1 = min(x0 + 1, w)
-
-        # fila dentro de la columna (0..answers_per_column-1)
+        # fila dentro de la columna (0..answers_per_column-1) y ventana afinada
         row_idx = question_index % answers_per_column
-        row_top = float(row_boundaries[row_idx])
-        row_bottom = float(row_boundaries[row_idx + 1])
-        row_height = row_bottom - row_top
-
-        # centramos y tomamos todo el alto de fila (con pequeño margen)
-        center = (row_top + row_bottom) / 2.0
-        half_height = row_height * 0.50
-
-        local_top = int(max(center - half_height, 0))
-        local_bottom = int(min(center + half_height, band_height))
-
-        if local_bottom <= local_top:
-            local_bottom = min(local_top + 1, band_height)
+        local_top, local_bottom = row_windows_por_columna[column_index][row_idx]
 
         sub = banda[local_top:local_bottom, x0:x1]
 
@@ -540,6 +536,58 @@ def _estimacion_ancho_columnas(
     widths = [c[2] for c in columnas]
     median_width = int(np.median(widths))
     return max(int(median_width * 1.0), 40)
+
+
+def _calcular_filas_columna(
+    banda: np.ndarray,
+    x_range: tuple[int, int],
+    base_boundaries: np.ndarray,
+    config: OMRConfig,
+) -> List[tuple[int, int]]:
+    """Devuelve [top, bottom) por fila afinando el centro con el perfil real."""
+
+    h_band, _ = banda.shape
+    x0, x1 = x_range
+    x0 = max(0, min(x0, banda.shape[1]))
+    x1 = max(x0 + 1, min(x1, banda.shape[1]))
+
+    col_gray = banda[:, x0:x1]
+    left_margin = int(col_gray.shape[1] * config.answer_left_margin_ratio)
+    left_margin = min(left_margin, col_gray.shape[1] - 1) if col_gray.shape[1] > 0 else 0
+    right_img = col_gray[:, left_margin:] if col_gray.size else col_gray
+
+    if right_img.size:
+        profile = _normalized_inverted(right_img).mean(axis=1)
+        profile = cv2.GaussianBlur(profile.reshape(-1, 1), (1, 9), 0).flatten()
+    else:
+        profile = np.zeros((h_band,), dtype=np.float32)
+
+    row_windows: List[tuple[int, int]] = []
+    for idx in range(len(base_boundaries) - 1):
+        row_top = float(base_boundaries[idx])
+        row_bottom = float(base_boundaries[idx + 1])
+        row_height = max(row_bottom - row_top, 1.0)
+        predicted_center = (row_top + row_bottom) / 2.0
+
+        search_window = max(int(row_height * 0.35), 3)
+        start = int(max(predicted_center - search_window, 0))
+        end = int(min(predicted_center + search_window, h_band - 1))
+        if end <= start:
+            end = min(start + 1, h_band - 1)
+
+        segment = profile[start : end + 1]
+        offset = int(np.argmax(segment)) if segment.size else 0
+        center = start + offset
+
+        half_height = max(int(row_height * 0.55), 6)
+        top = max(center - half_height, 0)
+        bottom = min(center + half_height, h_band)
+        if bottom <= top:
+            bottom = min(top + 1, h_band)
+
+        row_windows.append((top, bottom))
+
+    return row_windows
 
 
 def _clasificar_alternativa(
@@ -754,10 +802,21 @@ def _debug_answers_band_and_grid(
         activation_ratio=0.10,
     )
 
+    banda_gray = banda_gray[adj_top:adj_bottom, :]
     band_color = band_color[adj_top:adj_bottom, :]
     band_height = band_color.shape[0]
     answers_per_column = int(np.ceil(config.questions / len(answer_columns)))
     row_boundaries = np.linspace(0, band_height, answers_per_column + 1, dtype=int)
+    row_windows_por_columna: List[List[tuple[int, int]]] = []
+    for x0, x1 in x_ranges:
+        row_windows_por_columna.append(
+            _calcular_filas_columna(
+                banda_gray,
+                (x0, x1),
+                row_boundaries,
+                config,
+            )
+        )
 
     for col_idx, (x0, x1) in enumerate(x_ranges):
         cv2.rectangle(band_color, (x0, 0), (x1, band_height), (0, 255, 0), 1)
@@ -772,8 +831,17 @@ def _debug_answers_band_and_grid(
             cv2.LINE_AA,
         )
 
-        for rb in row_boundaries:
-            cv2.line(band_color, (x0, rb), (x1, rb), (255, 0, 0), 1)
+        row_windows = row_windows_por_columna[col_idx]
+        for top, _ in row_windows:
+            cv2.line(band_color, (x0, top), (x1, top), (255, 0, 0), 1)
+        if row_windows:
+            cv2.line(
+                band_color,
+                (x0, row_windows[-1][1]),
+                (x1, row_windows[-1][1]),
+                (255, 0, 0),
+                1,
+            )
 
     cv2.imwrite(str(out_dir / "05_answers_grid.png"), band_color)
 
@@ -816,6 +884,16 @@ def _debug_question_row(
     banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
     row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
+    row_windows_por_columna: List[List[tuple[int, int]]] = []
+    for xr in x_ranges:
+        row_windows_por_columna.append(
+            _calcular_filas_columna(
+                banda,
+                xr,
+                row_boundaries,
+                config,
+            )
+        )
 
     col_index = min(
         question_index // answers_per_column,
@@ -824,10 +902,7 @@ def _debug_question_row(
     x0, x1 = x_ranges[col_index]
 
     row_idx = question_index % answers_per_column
-    local_top = int(np.floor(row_boundaries[row_idx]))
-    local_bottom = int(np.ceil(row_boundaries[row_idx + 1]))
-    if local_bottom <= local_top:
-        local_bottom = min(local_top + 1, band_height)
+    local_top, local_bottom = row_windows_por_columna[col_index][row_idx]
 
     sub = banda[local_top:local_bottom, x0:x1]
     cv2.imwrite(str(out_dir / f"Q{question_index+1:03d}_row.png"), sub)
