@@ -23,3 +23,17 @@ documentado en `omr_processor.py`, pero los puntos clave del algoritmo son:
 
 Este pipeline permite trabajar con escaneos parciales siempre que los
 marcadores sigan visibles en la banda inferior configurada.
+
+## Nueva arquitectura basada en plantilla y marcas inferiores
+
+- `template.py` describe la hoja ideal de 1240×874 px, ubicaciones de las
+  3 marcas de alineación inferiores y las fórmulas de la matriz de DNI (8×10)
+  y de las 4 columnas de respuestas (25×5 cada una).
+- `alignment.py` localiza las tres marcas en la franja inferior de la imagen y
+  calcula una transformación afín que corrige desplazamientos, rotaciones y
+  ligeras variaciones de escala.
+- `dni_reader.py` y `answers_reader.py` mapean cada centro de burbuja desde la
+  plantilla a la imagen real, recortan la zona correspondiente y deciden la
+  marca usando un umbral configurable, detectando también blancos y conflictos.
+- `omr_system.py` orquesta el flujo completo (carga, preprocesado, alineación y
+  lectura) y `exporter.py` permite guardar los resultados en JSON o CSV.
