@@ -56,8 +56,10 @@ class OMRConfig:
 
     # Banda vertical aproximada del bloque de DNI (relativa a la altura total)
     # Ajusta estos dos valores si ves en las imágenes debug que la banda no
-    # coincide con el DNI real.
-    dni_vertical_band: tuple[float, float] = (0.06, 0.48)
+    # coincide con el DNI real. El rango por defecto evita la zona superior
+    # donde suele escribirse el número manual y se extiende más abajo para
+    # cubrir las burbujas 0–9 completas.
+    dni_vertical_band: tuple[float, float] = (0.12, 0.64)
 
     # Banda vertical aproximada de las respuestas (relativa a la altura total)
     answer_vertical_band: tuple[float, float] = (0.12, 0.94)
