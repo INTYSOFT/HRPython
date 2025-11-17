@@ -57,10 +57,10 @@ class OMRConfig:
     # Banda vertical aproximada del bloque de DNI (relativa a la altura total)
     # Ajusta estos dos valores si ves en las imágenes debug que la banda no
     # coincide con el DNI real.
-    dni_vertical_band: tuple[float, float] = (0.15, 0.36)
+    dni_vertical_band: tuple[float, float] = (0.06, 0.48)
 
     # Banda vertical aproximada de las respuestas (relativa a la altura total)
-    answer_vertical_band: tuple[float, float] = (0.34, 0.9)
+    answer_vertical_band: tuple[float, float] = (0.12, 0.94)
 
     # Porcentaje de altura usada como banda inferior de sincronización
     sync_band_height_ratio: float = 0.18
@@ -172,6 +172,70 @@ def _normalized_inverted(region: np.ndarray) -> np.ndarray:
         return np.zeros((1, 1), dtype=np.float32)
     inverted = cv2.bitwise_not(region)
     return inverted.astype(np.float32) / 255.0
+
+
+def _ajustar_banda_vertical(
+    gray_band: np.ndarray,
+    x_ranges: Sequence[tuple[int, int]],
+    min_height: int,
+    activation_ratio: float = 0.12,
+    smooth_kernel: int = 9,
+    margin: int = 4,
+) -> tuple[int, int]:
+    """Ajusta dinámicamente la banda vertical basándose en el perfil de tinta.
+
+    Se calcula un perfil vertical promedio (invirtiendo la imagen) usando sólo las
+    columnas indicadas en ``x_ranges``. A partir de ese perfil se busca la zona con
+    tinta significativa y se devuelve un rango [top, bottom) refinado.
+    """
+
+    h_band, w_band = gray_band.shape[:2]
+    if h_band <= 0 or w_band <= 0:
+        return (0, h_band)
+
+    slices = []
+    for x0, x1 in x_ranges:
+        x0 = max(0, min(x0, w_band))
+        x1 = max(x0 + 1, min(x1, w_band))
+        if x1 <= x0:
+            continue
+        slices.append(gray_band[:, x0:x1])
+
+    if not slices:
+        return (0, h_band)
+
+    stacked = np.concatenate(slices, axis=1)
+    inv = cv2.bitwise_not(stacked).astype(np.float32) / 255.0
+    profile = inv.mean(axis=1)
+
+    if profile.size == 0:
+        return (0, h_band)
+
+    kernel = max(3, smooth_kernel | 1)  # impar
+    profile_smooth = cv2.GaussianBlur(profile.reshape(-1, 1), (1, kernel), 0).flatten()
+
+    max_val = float(profile_smooth.max())
+    if max_val <= 0:
+        return (0, h_band)
+
+    threshold = max_val * activation_ratio
+    active_idx = np.where(profile_smooth >= threshold)[0]
+    if active_idx.size == 0:
+        return (0, h_band)
+
+    top = int(active_idx.min())
+    bottom = int(active_idx.max())
+
+    top = max(top - margin, 0)
+    bottom = min(bottom + margin, h_band - 1)
+
+    if bottom - top + 1 < min_height:
+        center = (top + bottom) // 2
+        half = max(min_height // 2, 1)
+        top = max(center - half, 0)
+        bottom = min(center + half, h_band - 1)
+
+    return (top, bottom + 1)
 
 
 def _render_page(
@@ -298,26 +362,35 @@ def _leer_dni(
 
     h, w = gray.shape
 
-    # Banda general del bloque de DNI (aproximada)
+    # Banda general del bloque de DNI (aproximada, luego afinada por perfil)
     band_top = int(h * config.dni_vertical_band[0])
     band_bottom = int(h * config.dni_vertical_band[1])
-    band_height = max(band_bottom - band_top, 1)
+    band_top = max(0, min(band_top, h - 1))
+    band_bottom = max(band_top + 1, min(band_bottom, h))
 
-    # Sub-banda donde viven las 10 filas (evitamos encabezados)
-    inner_top = band_top + int(band_height * 0.15)
-    inner_bottom = band_top + int(band_height * 0.95)
-    if inner_bottom <= inner_top:
-        inner_bottom = min(inner_top + 10, h)
-
-    banda = gray[inner_top:inner_bottom, :]
+    banda = gray[band_top:band_bottom, :]
+    band_height = banda.shape[0]
 
     digits: List[str] = []
     column_width = _estimacion_ancho_columnas(columnas)
 
+    x_ranges: List[tuple[int, int]] = []
     for col in columnas:
         x_center = col[0] + col[2] // 2
         x0 = max(x_center - column_width // 2, 0)
         x1 = min(x_center + column_width // 2, w)
+        x_ranges.append((x0, x1))
+
+    # Afinar la banda vertical usando el perfil de tinta real de las columnas
+    adj_top, adj_bottom = _ajustar_banda_vertical(
+        banda,
+        x_ranges,
+        min_height=max(int(band_height * 0.8), 140),
+        activation_ratio=0.12,
+    )
+    banda = banda[adj_top:adj_bottom, :]
+
+    for x0, x1 in x_ranges:
         sub = banda[:, x0:x1]
         digit = _clasificar_digito(sub, config)
         digits.append(str(digit))
@@ -384,6 +457,23 @@ def _leer_respuestas(
     column_width = _estimacion_ancho_columnas(columnas)
     resultados: List[Respuesta] = []
 
+    x_ranges: List[tuple[int, int]] = []
+    for col in columnas:
+        x_center = col[0] + col[2] // 2
+        x0 = max(x_center - column_width // 2, 0)
+        x1 = min(x_center + column_width // 2, w)
+        x_ranges.append((x0, x1))
+
+    # Afinar la banda vertical en función de la tinta real de las columnas
+    adj_top, adj_bottom = _ajustar_banda_vertical(
+        banda,
+        x_ranges,
+        min_height=max(int(band_height * 0.85), 400 // max(len(columnas), 1)),
+        activation_ratio=0.10,
+    )
+    banda = banda[adj_top:adj_bottom, :]
+    band_height = banda.shape[0]
+
     # Limites “ideales” de cada fila (0..band_height)
     row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
 
@@ -408,9 +498,9 @@ def _leer_respuestas(
         row_bottom = float(row_boundaries[row_idx + 1])
         row_height = row_bottom - row_top
 
-        # centramos y tomamos el 90 % del alto de fila
+        # centramos y tomamos todo el alto de fila (con pequeño margen)
         center = (row_top + row_bottom) / 2.0
-        half_height = row_height * 0.45   # 0.9 / 2
+        half_height = row_height * 0.50
 
         local_top = int(max(center - half_height, 0))
         local_bottom = int(min(center + half_height, band_height))
@@ -586,19 +676,34 @@ def _debug_dni_band(
     h, w = gray.shape
     band_top = int(h * config.dni_vertical_band[0])
     band_bottom = int(h * config.dni_vertical_band[1])
+    band_top = max(0, min(band_top, h - 1))
+    band_bottom = max(band_top + 1, min(band_bottom, h))
     band_height = max(band_bottom - band_top, 1)
 
     # Imagen de la banda de DNI
-    dni_band_color = image_bgr[band_top:band_bottom, :].copy()
-    cv2.imwrite(str(out_dir / "02_dni_band.png"), dni_band_color)
-
     banda_gray = gray[band_top:band_bottom, :]
     column_width = _estimacion_ancho_columnas(dni_anchors)
 
-    for col_idx, (x, y, w_col, h_col) in enumerate(dni_anchors):
-        x_center = x + w_col // 2
+    x_ranges: List[tuple[int, int]] = []
+    for col in dni_anchors:
+        x_center = col[0] + col[2] // 2
         x0 = max(x_center - column_width // 2, 0)
         x1 = min(x_center + column_width // 2, w)
+        x_ranges.append((x0, x1))
+
+    adj_top, adj_bottom = _ajustar_banda_vertical(
+        banda_gray,
+        x_ranges,
+        min_height=max(int(band_height * 0.8), 140),
+        activation_ratio=0.12,
+    )
+
+    dni_band_color = image_bgr[band_top + adj_top : band_top + adj_bottom, :].copy()
+    cv2.imwrite(str(out_dir / "02_dni_band.png"), dni_band_color)
+
+    banda_gray = banda_gray[adj_top:adj_bottom, :]
+
+    for col_idx, (x0, x1) in enumerate(x_ranges):
         col_img = banda_gray[:, x0:x1]
 
         # columna cruda
@@ -628,18 +733,31 @@ def _debug_answers_band_and_grid(
     if y1 - y0 < 1:
         return
 
+    banda_gray = gray[y0:y1, :]
     band_color = image_bgr[y0:y1, :].copy()
+    band_height = band_color.shape[0]
+
+    column_width = _estimacion_ancho_columnas(answer_columns)
+    x_ranges: List[tuple[int, int]] = []
+    for col in answer_columns:
+        x_center = col[0] + col[2] // 2
+        x0 = max(x_center - column_width // 2, 0)
+        x1 = min(x_center + column_width // 2, band_color.shape[1])
+        x_ranges.append((x0, x1))
+
+    adj_top, adj_bottom = _ajustar_banda_vertical(
+        banda_gray,
+        x_ranges,
+        min_height=max(int(band_height * 0.85), 400 // max(len(answer_columns), 1)),
+        activation_ratio=0.10,
+    )
+
+    band_color = band_color[adj_top:adj_bottom, :]
     band_height = band_color.shape[0]
     answers_per_column = int(np.ceil(config.questions / len(answer_columns)))
     row_boundaries = np.linspace(0, band_height, answers_per_column + 1, dtype=int)
 
-    column_width = _estimacion_ancho_columnas(answer_columns)
-
-    for col_idx, (x, y, w_col, h_col) in enumerate(answer_columns):
-        x_center = x + w_col // 2
-        x0 = max(x_center - column_width // 2, 0)
-        x1 = min(x_center + column_width // 2, band_color.shape[1])
-
+    for col_idx, (x0, x1) in enumerate(x_ranges):
         cv2.rectangle(band_color, (x0, 0), (x1, band_height), (0, 255, 0), 1)
         cv2.putText(
             band_color,
@@ -675,20 +793,33 @@ def _debug_question_row(
         return
 
     banda = gray[y0:y1, :]
+    band_height = banda.shape[0]
     answers_per_column = int(np.ceil(config.questions / len(answer_columns)))
+    column_width = _estimacion_ancho_columnas(answer_columns)
+
+    x_ranges: List[tuple[int, int]] = []
+    for col in answer_columns:
+        x_center = col[0] + col[2] // 2
+        x0 = max(x_center - column_width // 2, 0)
+        x1 = min(x_center + column_width // 2, w)
+        x_ranges.append((x0, x1))
+
+    adj_top, adj_bottom = _ajustar_banda_vertical(
+        banda,
+        x_ranges,
+        min_height=max(int(band_height * 0.85), 400 // max(len(answer_columns), 1)),
+        activation_ratio=0.10,
+    )
+
+    banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
     row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
-
-    column_width = _estimacion_ancho_columnas(answer_columns)
 
     col_index = min(
         question_index // answers_per_column,
         len(answer_columns) - 1,
     )
-    col = answer_columns[col_index]
-    x_center = col[0] + col[2] // 2
-    x0 = max(x_center - column_width // 2, 0)
-    x1 = min(x_center + column_width // 2, w)
+    x0, x1 = x_ranges[col_index]
 
     row_idx = question_index % answers_per_column
     local_top = int(np.floor(row_boundaries[row_idx]))
