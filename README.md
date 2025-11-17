@@ -10,7 +10,7 @@ documentado en `omr_processor.py`, pero los puntos clave del algoritmo son:
      esa banda no hace falta capturar la página completa.
 2. **Lectura del DNI**
    - La imagen se lleva a grises y se calcula un rango de respaldo usando
-     `OMRConfig.dni_vertical_band` (por defecto del 8 % al 32 % del alto).
+     `OMRConfig.dni_vertical_band` (por defecto del 12 % al 64 % del alto).
    - La banda real se extrae con `_banda_vertical_desde_referencias`, que recorta
      horizontalmente entre la primera y la última ancla, aplica
      `x_band_padding_ratio` y proyecta la tinta verticalmente. El segmento con
