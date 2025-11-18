@@ -44,6 +44,17 @@ class OMRConfig:
     row_profile_activation_ratio: float = 0.35
     # Mínimo de píxeles consecutivos por grupo para considerarlo una fila
     row_profile_min_run: int = 3
+
+    # --- Parámetros para detección de burbujas ---
+    bubble_median_blur_kernel: int = 5
+    bubble_hough_dp: float = 1.2
+    bubble_hough_min_dist_ratio: float = 0.65
+    bubble_hough_param1: int = 70
+    bubble_hough_param2: int = 18
+    bubble_min_radius_px: int = 5
+    bubble_max_radius_px: int = 22
+    bubble_contour_min_circularity: float = 0.55
+    bubble_vertical_tolerance_ratio: float = 0.45
     
     
     # Resolución de renderizado del PDF
@@ -192,6 +203,159 @@ def _detectar_centros_filas(
     return centers_arr
 
 
+def _detectar_burbujas(
+    banda_gray: np.ndarray,
+    x_ranges: Sequence[tuple[int, int]],
+    expected_rows: int,
+    config: OMRConfig,
+) -> list[tuple[int, int, int]]:
+    """Detecta burbujas mediante Hough y contornos filtrados."""
+
+    h_band, w_band = banda_gray.shape[:2]
+    if h_band <= 0 or w_band <= 0:
+        return []
+
+    masked = banda_gray.copy()
+    if x_ranges:
+        mask = np.zeros_like(banda_gray)
+        for x0, x1 in x_ranges:
+            x0 = max(0, min(x0, w_band))
+            x1 = max(x0 + 1, min(x1, w_band))
+            mask[:, x0:x1] = 255
+        masked[mask == 0] = 255
+
+    blur_kernel = max(3, config.bubble_median_blur_kernel | 1)
+    blurred = cv2.medianBlur(masked, blur_kernel)
+
+    avg_width = np.median([x1 - x0 for x0, x1 in x_ranges]) if x_ranges else w_band
+    options = max(len(config.answer_labels), 1)
+    option_width = avg_width / options
+    radius_est = max(
+        config.bubble_min_radius_px,
+        min(config.bubble_max_radius_px, int(round(option_width * 0.45))),
+    )
+    min_radius = max(config.bubble_min_radius_px, int(radius_est * 0.6))
+    max_radius = max(min_radius + 1, min(config.bubble_max_radius_px, int(radius_est * 1.4)))
+
+    spacing_est = h_band / max(expected_rows, 1)
+    min_dist = max(4, int(spacing_est * config.bubble_hough_min_dist_ratio))
+
+    circles = cv2.HoughCircles(
+        blurred,
+        cv2.HOUGH_GRADIENT,
+        dp=config.bubble_hough_dp,
+        minDist=min_dist,
+        param1=config.bubble_hough_param1,
+        param2=config.bubble_hough_param2,
+        minRadius=min_radius,
+        maxRadius=max_radius,
+    )
+
+    centers: list[tuple[int, int, int]] = []
+    if circles is not None and circles.size > 0:
+        for x, y, r in np.uint16(np.around(circles[0, :])):
+            if min_radius <= r <= max_radius:
+                centers.append((int(x), int(y), int(r)))
+
+    if centers:
+        return centers
+
+    # Fallback: detección por contornos
+    blur = cv2.GaussianBlur(masked, (5, 5), 0)
+    _, bin_inv = cv2.threshold(
+        blur,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+    )
+
+    kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    bin_inv = cv2.morphologyEx(bin_inv, cv2.MORPH_CLOSE, kernel, iterations=1)
+
+    contours, _ = cv2.findContours(
+        bin_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    min_area = np.pi * (min_radius * 0.8) ** 2
+    max_area = np.pi * (max_radius * 1.25) ** 2
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_area or area > max_area:
+            continue
+
+        perim = cv2.arcLength(cnt, True)
+        circularity = (4 * np.pi * area / (perim * perim)) if perim > 0 else 0.0
+        if circularity < config.bubble_contour_min_circularity:
+            continue
+
+        x, y, w_cnt, h_cnt = cv2.boundingRect(cnt)
+        if h_cnt <= 0 or w_cnt <= 0:
+            continue
+
+        aspect_ratio = w_cnt / float(h_cnt)
+        if not 0.65 <= aspect_ratio <= 1.45:
+            continue
+
+        centers.append(
+            (
+                int(x + w_cnt / 2),
+                int(y + h_cnt / 2),
+                int((w_cnt + h_cnt) / 4),
+            )
+        )
+
+    return centers
+
+
+def _agrupar_burbujas_por_fila(
+    centers: Sequence[tuple[int, int, int]],
+    expected_rows: int,
+    h_band: int,
+    config: OMRConfig,
+) -> np.ndarray:
+    """Agrupa burbujas por coordenada Y y devuelve los centros de cada fila."""
+
+    if not centers:
+        return np.array([], dtype=int)
+
+    centers_sorted = sorted(centers, key=lambda p: p[1])
+    spacing_est = h_band / max(expected_rows, 1)
+    tolerance = max(config.bubble_min_radius_px * 1.5, spacing_est * config.bubble_vertical_tolerance_ratio)
+
+    filas: list[list[tuple[int, int, int]]] = []
+    fila_actual: list[tuple[int, int, int]] = []
+    y_prev: float | None = None
+
+    for c in centers_sorted:
+        if y_prev is None:
+            fila_actual = [c]
+        elif abs(c[1] - y_prev) <= tolerance:
+            fila_actual.append(c)
+        else:
+            filas.append(fila_actual)
+            fila_actual = [c]
+        y_prev = c[1]
+
+    if fila_actual:
+        filas.append(fila_actual)
+
+    centers_y = np.array([int(np.mean([c[1] for c in fila])) for fila in filas], dtype=int)
+    centers_y = np.sort(centers_y)
+
+    if centers_y.size == 0:
+        return centers_y
+
+    if centers_y.size != expected_rows and expected_rows > 1:
+        centers_y = np.linspace(
+            centers_y.min(),
+            centers_y.max(),
+            expected_rows,
+        ).astype(int)
+
+    return centers_y
+
+
 def _calcular_row_boundaries(
     banda_gray: np.ndarray,
     x_ranges: Sequence[tuple[int, int]],
@@ -210,21 +374,41 @@ def _calcular_row_boundaries(
     if not x_ranges:
         return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
 
-    # Usamos la columna central como referencia
-    col_idx = len(x_ranges) // 2
-    col_idx = max(0, min(col_idx, len(x_ranges) - 1))
-    ref_range = x_ranges[col_idx]
-
-    centers = _detectar_centros_filas(
+    burbujas = _detectar_burbujas(
         banda_gray,
-        ref_range,
+        x_ranges,
         answers_per_column,
+        config,
+    )
+    centers = _agrupar_burbujas_por_fila(
+        burbujas,
+        answers_per_column,
+        h_band,
         config,
     )
 
     if centers.size != answers_per_column:
-        # Fallback: si algo falla, usamos reparto lineal anterior
+        # Fallback: perfil vertical tradicional
+        col_idx = len(x_ranges) // 2
+        col_idx = max(0, min(col_idx, len(x_ranges) - 1))
+        ref_range = x_ranges[col_idx]
+
+        centers = _detectar_centros_filas(
+            banda_gray,
+            ref_range,
+            answers_per_column,
+            config,
+        )
+
+    if centers.size == 0:
         return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    if centers.size != answers_per_column:
+        centers = np.linspace(
+            centers[0],
+            centers[-1],
+            answers_per_column,
+        ).astype(int)
 
     # Distancia típica entre filas
     diffs = np.diff(centers)
