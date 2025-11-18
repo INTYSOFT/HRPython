@@ -1294,7 +1294,58 @@ def _debug_question_row(
 
     banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
-    row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
+
+    # Calcular posiciones Y dinámicas a partir de las burbujas detectadas
+    # para evitar acumulación de error en el espaciado.
+    blur = cv2.GaussianBlur(banda, (5, 5), 0)
+    _, bin_inv = cv2.threshold(
+        blur,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
+    )
+
+    contours, _ = cv2.findContours(
+        bin_inv, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+    )
+
+    burbujas_detectadas: list[tuple[int, int, int, int]] = []
+    for cnt in contours:
+        x, y, w_cnt, h_cnt = cv2.boundingRect(cnt)
+        area = w_cnt * h_cnt
+        if area <= 0:
+            continue
+
+        aspect_ratio = w_cnt / float(h_cnt)
+        # Filtro básico para formas aproximadamente circulares/ovaladas
+        if 0.6 <= aspect_ratio <= 1.6 and 5 <= w_cnt <= band_height:
+            burbujas_detectadas.append((x, y, w_cnt, h_cnt))
+
+    row_boundaries: np.ndarray
+    if len(burbujas_detectadas) >= 2:
+        ys = [rect[1] for rect in burbujas_detectadas]
+        Y_primera_fila = float(min(ys))
+        Y_ultima_fila = float(max(ys))
+
+        espaciado_promedio = (Y_ultima_fila - Y_primera_fila) / float(
+            max(answers_per_column - 1, 1)
+        )
+
+        posiciones_lineas = [
+            Y_primera_fila + i * espaciado_promedio for i in range(answers_per_column)
+        ]
+        posiciones_lineas = [int(round(y)) for y in posiciones_lineas]
+
+        diffs = np.diff(posiciones_lineas)
+        step = float(np.median(diffs)) if diffs.size > 0 else espaciado_promedio
+        row_boundaries = np.zeros(answers_per_column + 1, dtype=float)
+        row_boundaries[0] = max(0.0, posiciones_lineas[0] - step / 2.0)
+        for i in range(1, answers_per_column):
+            row_boundaries[i] = (posiciones_lineas[i - 1] + posiciones_lineas[i]) / 2.0
+        row_boundaries[-1] = min(float(band_height), posiciones_lineas[-1] + step / 2.0)
+        row_boundaries = np.clip(row_boundaries, 0.0, float(band_height))
+    else:
+        row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
 
     col_index = min(
         question_index // answers_per_column,
