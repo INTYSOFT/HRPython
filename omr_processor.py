@@ -102,6 +102,9 @@ class OMRConfig:
     # Directorios opcionales para guardar recortes de depuración
     dni_region_dir: Path | None = Path(r"D:\\degubHR\\DNi")
     respuestas_region_dir: Path | None = Path(r"D:\\degubHR\\Respuestas")
+    # Directorios opcionales para guardar las marcas utilizadas en la extracción
+    dni_marks_dir: Path | None = Path(r"D:\\degubHR\\DNiMarcas")
+    respuestas_marks_dir: Path | None = Path(r"D:\\degubHR\\RespuestasMarcas")
 
 
 # ---------------------------------------------------------------------------
@@ -651,9 +654,13 @@ def _leer_dni(
     h, w = gray.shape
 
     debug_root: Path | None = None
+    marks_dir: Path | None = None
     if config.dni_region_dir:
         debug_root = Path(config.dni_region_dir) / f"pagina_{pagina:03d}"
         debug_root.mkdir(parents=True, exist_ok=True)
+    if config.dni_marks_dir:
+        marks_dir = Path(config.dni_marks_dir) / f"pagina_{pagina:03d}"
+        marks_dir.mkdir(parents=True, exist_ok=True)
 
     # Banda general del bloque de DNI (aproximada, luego afinada por perfil)
     band_top = int(h * config.dni_vertical_band[0])
@@ -686,6 +693,10 @@ def _leer_dni(
     )
     banda = banda[adj_top:adj_bottom, :]
 
+    marks_img: np.ndarray | None = None
+    if marks_dir:
+        marks_img = cv2.cvtColor(banda, cv2.COLOR_GRAY2BGR)
+
     if debug_root:
         cv2.imwrite(str(debug_root / "dni_band_afinada.png"), banda)
 
@@ -699,10 +710,32 @@ def _leer_dni(
         )
         digits.append(str(digit))
 
+        if marks_img is not None:
+            cv2.rectangle(
+                marks_img,
+                (x0, 0),
+                (max(x1 - 1, x0), marks_img.shape[0] - 1),
+                (255, 0, 0),
+                2,
+            )
+            cv2.putText(
+                marks_img,
+                f"{idx}:{digit}",
+                (x0 + 2, 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (255, 0, 0),
+                1,
+                cv2.LINE_AA,
+            )
+
     if debug_root:
         resumen_path = debug_root / "dni_resumen.txt"
         with open(resumen_path, "w", encoding="utf-8") as f:
             f.write(f"DNI detectado: {''.join(digits)}\n")
+
+    if marks_img is not None and marks_dir:
+        cv2.imwrite(str(marks_dir / "dni_marcas.png"), marks_img)
 
     return "".join(digits)
 
@@ -774,9 +807,13 @@ def _leer_respuestas(
     h, w = gray.shape
 
     debug_root: Path | None = None
+    marks_dir: Path | None = None
     if config.respuestas_region_dir:
         debug_root = Path(config.respuestas_region_dir) / f"pagina_{pagina:03d}"
         debug_root.mkdir(parents=True, exist_ok=True)
+    if config.respuestas_marks_dir:
+        marks_dir = Path(config.respuestas_marks_dir) / f"pagina_{pagina:03d}"
+        marks_dir.mkdir(parents=True, exist_ok=True)
 
     # Banda aproximada de respuestas
     y0 = int(h * config.answer_vertical_band[0])
@@ -830,6 +867,10 @@ def _leer_respuestas(
     banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
 
+    marks_img: np.ndarray | None = None
+    if marks_dir:
+        marks_img = cv2.cvtColor(banda, cv2.COLOR_GRAY2BGR)
+
     if debug_root:
         cv2.imwrite(str(debug_root / "respuestas_band_afinada.png"), banda)
 
@@ -840,6 +881,36 @@ def _leer_respuestas(
         answers_per_column,
         config,
     )
+
+    if marks_img is not None:
+        for col_idx, (x0, x1) in enumerate(x_ranges):
+            cv2.rectangle(
+                marks_img,
+                (x0, 0),
+                (max(x1 - 1, x0), band_height - 1),
+                (0, 255, 0),
+                2,
+            )
+            cv2.putText(
+                marks_img,
+                f"C{col_idx+1}",
+                (x0 + 2, 14),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
+                (0, 255, 0),
+                1,
+                cv2.LINE_AA,
+            )
+
+        for rb in row_boundaries:
+            y_rb = int(rb)
+            cv2.line(
+                marks_img,
+                (0, y_rb),
+                (marks_img.shape[1] - 1, y_rb),
+                (0, 200, 0),
+                1,
+            )
 
     for question_index in range(config.questions):
         # columna lógica
@@ -901,6 +972,9 @@ def _leer_respuestas(
                 intensidad=intensidad,
             )
         )
+
+    if marks_img is not None and marks_dir:
+        cv2.imwrite(str(marks_dir / "respuestas_marcas.png"), marks_img)
 
     return resultados
 
