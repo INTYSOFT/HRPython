@@ -100,8 +100,8 @@ class OMRConfig:
     x_band_padding_ratio: float = 0.12
 
     # Directorios opcionales para guardar recortes de depuración
-    dni_region_dir: Path | None = None
-    respuestas_region_dir: Path | None = None
+    dni_region_dir: Path | None = Path(r"D:\\degubHR\\DNi")
+    respuestas_region_dir: Path | None = Path(r"D:\\degubHR\\Respuestas")
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +650,11 @@ def _leer_dni(
 
     h, w = gray.shape
 
+    debug_root: Path | None = None
+    if config.dni_region_dir:
+        debug_root = Path(config.dni_region_dir) / f"pagina_{pagina:03d}"
+        debug_root.mkdir(parents=True, exist_ok=True)
+
     # Banda general del bloque de DNI (aproximada, luego afinada por perfil)
     band_top = int(h * config.dni_vertical_band[0])
     band_bottom = int(h * config.dni_vertical_band[1])
@@ -658,6 +663,9 @@ def _leer_dni(
 
     banda = gray[band_top:band_bottom, :]
     band_height = banda.shape[0]
+
+    if debug_root:
+        cv2.imwrite(str(debug_root / "dni_band_cruda.png"), banda)
 
     digits: List[str] = []
     column_width = _estimacion_ancho_columnas(columnas)
@@ -678,10 +686,23 @@ def _leer_dni(
     )
     banda = banda[adj_top:adj_bottom, :]
 
-    for x0, x1 in x_ranges:
+    if debug_root:
+        cv2.imwrite(str(debug_root / "dni_band_afinada.png"), banda)
+
+    for idx, (x0, x1) in enumerate(x_ranges, start=1):
         sub = banda[:, x0:x1]
-        digit = _clasificar_digito(sub, config)
+        digit = _clasificar_digito(
+            sub,
+            config,
+            debug_dir=debug_root / "columnas" if debug_root else None,
+            label=f"columna_{idx:02d}",
+        )
         digits.append(str(digit))
+
+    if debug_root:
+        resumen_path = debug_root / "dni_resumen.txt"
+        with open(resumen_path, "w", encoding="utf-8") as f:
+            f.write(f"DNI detectado: {''.join(digits)}\n")
 
     return "".join(digits)
 
@@ -689,6 +710,8 @@ def _leer_dni(
 def _clasificar_digito(
     column_img: np.ndarray,
     config: OMRConfig,
+    debug_dir: Path | None = None,
+    label: str | None = None,
 ) -> int:
     """Divide la columna en 10 celdas horizontales y escoge la de mayor tinta."""
 
@@ -709,6 +732,23 @@ def _clasificar_digito(
         scores.append(float(cell.mean()) if cell.size else 0.0)
 
     best_idx = int(np.argmax(scores))
+
+    if debug_dir is not None:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        col_label = label or "col"
+        cv2.imwrite(str(debug_dir / f"{col_label}_raw.png"), column_img)
+
+        vis = cv2.cvtColor(column_img, cv2.COLOR_GRAY2BGR)
+        for b in boundaries:
+            cv2.line(vis, (0, b), (vis.shape[1] - 1, b), (0, 0, 255), 1)
+        cv2.imwrite(str(debug_dir / f"{col_label}_grid.png"), vis)
+
+        log_path = debug_dir / f"{col_label}_scores.txt"
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(f"mejor_indice={best_idx}\n")
+            for idx, score in enumerate(scores):
+                f.write(f"{idx}: {score:.4f}\n")
+
     # Mapear índice de fila (0–9) al dígito real según la configuración.
     if 0 <= best_idx < len(config.dni_digit_values):
         return int(config.dni_digit_values[best_idx])
@@ -733,6 +773,11 @@ def _leer_respuestas(
 
     h, w = gray.shape
 
+    debug_root: Path | None = None
+    if config.respuestas_region_dir:
+        debug_root = Path(config.respuestas_region_dir) / f"pagina_{pagina:03d}"
+        debug_root.mkdir(parents=True, exist_ok=True)
+
     # Banda aproximada de respuestas
     y0 = int(h * config.answer_vertical_band[0])
     y1 = int(h * config.answer_vertical_band[1])
@@ -741,6 +786,9 @@ def _leer_respuestas(
 
     banda = gray[y0:y1, :]
     band_height = banda.shape[0]
+
+    if debug_root:
+        cv2.imwrite(str(debug_root / "respuestas_band_cruda.png"), banda)
 
     num_columnas = len(columnas)
     answers_per_column = int(np.ceil(config.questions / num_columnas))
@@ -782,6 +830,9 @@ def _leer_respuestas(
     banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
 
+    if debug_root:
+        cv2.imwrite(str(debug_root / "respuestas_band_afinada.png"), banda)
+
     # boundaries de filas basados en perfil de burbujas
     row_boundaries = _calcular_row_boundaries(
         banda,
@@ -815,6 +866,12 @@ def _leer_respuestas(
 
         sub = banda[local_top:local_bottom, x0_col:x1_col]
 
+        question_debug: Path | None = None
+        if debug_root:
+            question_debug = debug_root / f"pregunta_{question_index+1:03d}"
+            question_debug.mkdir(parents=True, exist_ok=True)
+            cv2.imwrite(str(question_debug / "recorte.png"), sub)
+
         # Boundaries específicos A–E para esta columna, en coordenadas locales
         local_boundaries: list[int] | None = None
         if (
@@ -833,6 +890,7 @@ def _leer_respuestas(
             config.answer_labels,
             config,
             x_boundaries=local_boundaries,
+            debug_dir=question_debug,
         )
 
         resultados.append(
@@ -865,6 +923,7 @@ def _clasificar_alternativa(
     labels: Sequence[str],
     config: OMRConfig,
     x_boundaries: Sequence[int] | None = None,
+    debug_dir: Path | None = None,
 ) -> tuple[str, str, float]:
     """Determina la opción con más tinta y aplica reglas de negocio.
 
@@ -935,6 +994,23 @@ def _clasificar_alternativa(
     scores_arr = np.array(scores, dtype=float)
     best_idx = int(scores_arr.argmax())
     best_score = float(scores_arr[best_idx])
+
+    if debug_dir:
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        vis = cv2.cvtColor(right_img, cv2.COLOR_GRAY2BGR)
+        for b in boundaries:
+            cv2.line(vis, (b, 0), (b, h_use - 1), (0, 0, 255), 1)
+        cv2.imwrite(str(debug_dir / "alternativa_recorte.png"), right_img)
+        cv2.imwrite(str(debug_dir / "alternativa_grid.png"), vis)
+
+        log_path = debug_dir / "alternativa_scores.txt"
+        with open(log_path, "w", encoding="utf-8") as f:
+            f.write(f"scores={scores_arr.tolist()}\n")
+            f.write(f"best_idx={best_idx}, best_score={best_score:.4f}\n")
+            f.write(
+                f"activation_threshold={config.cell_activation_threshold}, "
+                f"multi_mark_ratio={config.multi_mark_ratio}\n"
+            )
 
     # Caso 1: muy poca tinta en general → SIN RESPUESTA
     if best_score < config.cell_activation_threshold:
