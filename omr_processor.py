@@ -37,6 +37,15 @@ from models import AlumnoHoja, Respuesta
 class OMRConfig:
     """Parámetros del algoritmo OMR para la hoja de Academia Lumbreras."""
 
+     # --- Parámetros para detectar filas de burbujas ---
+    # Tamaño del kernel vertical para suavizar el perfil (debe ser impar)
+    row_profile_smooth_kernel: int = 21
+    # Umbral relativo para decidir dónde hay "tinta suficiente"
+    row_profile_activation_ratio: float = 0.35
+    # Mínimo de píxeles consecutivos por grupo para considerarlo una fila
+    row_profile_min_run: int = 3
+    
+    
     # Resolución de renderizado del PDF
     dpi: int = 200
 
@@ -62,7 +71,7 @@ class OMRConfig:
     dni_vertical_band: tuple[float, float] = (0.12, 0.64)
 
     # Banda vertical aproximada de las respuestas (relativa a la altura total)
-    answer_vertical_band: tuple[float, float] = (0.12, 0.94)
+    answer_vertical_band: tuple[float, float] = (0.10, 0.94)
 
     # Porcentaje de altura usada como banda inferior de sincronización
     sync_band_height_ratio: float = 0.18
@@ -74,15 +83,15 @@ class OMRConfig:
 
     # Umbral mínimo para considerar que una burbuja está marcada
     # (score combinado en [0, 1]).
-    cell_activation_threshold: float = 0.25
+    cell_activation_threshold: float = 0.22
 
     # Relación máxima second_best / best para aceptar la marca.
     # Si second >= multi_mark_ratio * best => se considera EN BLANCO.
-    multi_mark_ratio: float = 0.80
+    multi_mark_ratio: float = 0.90
 
     # Margen de recorte lateral para evitar tomar el número de la pregunta
     # (parte izquierda suele tener texto/números, burbujas suelen estar más a la derecha).
-    answer_left_margin_ratio: float = 0.15
+    answer_left_margin_ratio: float = 0.02
 
     # Estos se mantienen por compatibilidad (no se usan directamente ahora)
     profile_threshold_dni: float = 0.32
@@ -98,6 +107,134 @@ class OMRConfig:
 # ---------------------------------------------------------------------------
 # Punto principal de procesamiento (para la UI)
 # ---------------------------------------------------------------------------
+
+def _detectar_centros_filas(
+    banda_gray: np.ndarray,
+    x_range: tuple[int, int],
+    expected_rows: int,
+    config: OMRConfig,
+) -> np.ndarray:
+    """
+    Detecta los centros verticales de las filas de burbujas usando el perfil de tinta
+    en una sola columna de respuestas (x_range).
+    """
+
+    h_band, w_band = banda_gray.shape[:2]
+    if h_band <= 0 or w_band <= 0:
+        return np.array([], dtype=int)
+
+    x0, x1 = x_range
+    x0 = max(0, min(x0, w_band - 1))
+    x1 = max(x0 + 1, min(x1, w_band))
+
+    col_img = banda_gray[:, x0:x1]
+
+    # Perfil de tinta: invertimos para que más tinta = valor mayor
+    inv = cv2.bitwise_not(col_img).astype(np.float32) / 255.0
+    profile = inv.mean(axis=1)  # promedio por fila
+
+    if profile.size == 0:
+        return np.array([], dtype=int)
+
+    # Suavizado vertical
+    kernel = max(3, config.row_profile_smooth_kernel | 1)  # impar
+    profile_smooth = cv2.GaussianBlur(
+        profile.reshape(-1, 1),
+        (1, kernel),
+        0,
+    ).flatten()
+
+    max_val = float(profile_smooth.max())
+    if max_val <= 0:
+        return np.array([], dtype=int)
+
+    # Umbral relativo de activación
+    threshold = max_val * config.row_profile_activation_ratio
+    mask = profile_smooth >= threshold
+    idx = np.where(mask)[0]
+    if idx.size == 0:
+        return np.array([], dtype=int)
+
+    # Agrupamos índices consecutivos (cada grupo ≈ una fila)
+    splits = np.where(np.diff(idx) > 1)[0] + 1
+    groups = np.split(idx, splits)
+
+    centers: list[int] = []
+    for g in groups:
+        if g.size < config.row_profile_min_run:
+            continue
+        centers.append(int(g.mean()))
+
+    if not centers:
+        return np.array([], dtype=int)
+
+    centers_arr = np.array(sorted(centers), dtype=int)
+
+    # Si el número de filas detectadas ≠ expected_rows, remuestreamos linealmente
+    if centers_arr.size != expected_rows:
+        centers_arr = np.linspace(
+            centers_arr[0],
+            centers_arr[-1],
+            expected_rows,
+        ).astype(int)
+
+    return centers_arr
+
+
+def _calcular_row_boundaries(
+    banda_gray: np.ndarray,
+    x_ranges: Sequence[tuple[int, int]],
+    answers_per_column: int,
+    config: OMRConfig,
+) -> np.ndarray:
+    """
+    Calcula los límites de filas (row_boundaries) a partir de los centros detectados.
+    Devuelve un array de tamaño answers_per_column + 1 en coordenadas de banda_gray.
+    """
+
+    h_band, _ = banda_gray.shape[:2]
+    if h_band <= 0 or answers_per_column <= 0:
+        return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    if not x_ranges:
+        return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    # Usamos la columna central como referencia
+    col_idx = len(x_ranges) // 2
+    col_idx = max(0, min(col_idx, len(x_ranges) - 1))
+    ref_range = x_ranges[col_idx]
+
+    centers = _detectar_centros_filas(
+        banda_gray,
+        ref_range,
+        answers_per_column,
+        config,
+    )
+
+    if centers.size != answers_per_column:
+        # Fallback: si algo falla, usamos reparto lineal anterior
+        return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    # Distancia típica entre filas
+    diffs = np.diff(centers)
+    step = float(np.median(diffs)) if diffs.size > 0 else h_band / answers_per_column
+
+    boundaries = np.zeros(answers_per_column + 1, dtype=float)
+
+    # Primera frontera: un poco por encima del primer centro
+    boundaries[0] = max(0.0, centers[0] - step / 2.0)
+
+    # Fronteras intermedias = puntos medios entre centros
+    for i in range(1, answers_per_column):
+        boundaries[i] = (centers[i - 1] + centers[i]) / 2.0
+
+    # Última frontera: un poco por debajo del último centro
+    boundaries[-1] = min(float(h_band), centers[-1] + step / 2.0)
+
+    boundaries = np.clip(boundaries, 0.0, float(h_band))
+    boundaries = np.sort(boundaries)
+
+    return boundaries
 
 
 def procesar_pdf(
@@ -136,12 +273,18 @@ def procesar_pdf(
         # Las primeras N barras son las del bloque de DNI.
         dni_anchors = anchors[: config.dni_columns]
 
-        # El resto pertenecen al bloque de respuestas.
+                # El resto pertenecen al bloque de respuestas.
         answer_anchors_raw = anchors[config.dni_columns :]
 
         # En la hoja hay 5 barras por columna de preguntas;
-        # las compactamos en columnas lógicas.
+        # las compactamos en columnas lógicas (para tener un bounding box por columna)
         answer_columns = _compactar_columnas_respuestas(
+            answer_anchors_raw,
+            group_size=len(config.answer_labels),
+        )
+
+        # Y calculamos, a partir de las mismas barras, los límites X de A–E
+        option_boundaries = _calcular_boundaries_opciones(
             answer_anchors_raw,
             group_size=len(config.answer_labels),
         )
@@ -149,7 +292,14 @@ def procesar_pdf(
         gray = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2GRAY)
 
         dni = _leer_dni(gray, dni_anchors, config, index)
-        respuestas = _leer_respuestas(gray, answer_columns, config, index)
+        respuestas = _leer_respuestas(
+            gray,
+            answer_columns,
+            option_boundaries,
+            config,
+            index,
+        )
+
 
         resultados.append(
             AlumnoHoja(
@@ -166,6 +316,108 @@ def procesar_pdf(
 # ---------------------------------------------------------------------------
 # Utilidades de imagen
 # ---------------------------------------------------------------------------
+def _compactar_columnas_respuestas(
+    raw_anchors: Sequence[tuple[int, int, int, int]],
+    group_size: int,
+) -> List[tuple[int, int, int, int]]:
+    """Agrupa las barras de respuestas en columnas lógicas (bloques de 5)."""
+
+    if not raw_anchors:
+        return []
+
+    anchors = list(raw_anchors)
+    if len(anchors) < group_size:
+        # No hay suficientes barras para una columna, devolver tal cual.
+        return list(anchors)
+
+    columns: List[tuple[int, int, int, int]] = []
+    if len(anchors) % group_size == 0:
+        for i in range(0, len(anchors), group_size):
+            group = anchors[i : i + group_size]
+            xs = [a[0] for a in group]
+            ys = [a[1] for a in group]
+            x_ends = [a[0] + a[2] for a in group]
+            y_ends = [a[1] + a[3] for a in group]
+
+            x = min(xs)
+            y = min(ys)
+            w = max(x_ends) - x
+            h = max(y_ends) - y
+
+            columns.append((x, y, w, h))
+    else:
+        columns = anchors
+
+    return columns
+
+
+def _calcular_boundaries_opciones(
+    raw_anchors: Sequence[tuple[int, int, int, int]],
+    group_size: int,
+) -> List[List[int]]:
+    """
+    A partir de las barras inferiores de respuestas (raw_anchors) calcula,
+    para cada columna de preguntas, los límites X de las opciones A–E.
+
+    Devuelve una lista de columnas; cada columna es una lista de 6 enteros:
+    boundaries[0..5] tales que:
+        A -> [b0, b1)
+        B -> [b1, b2)
+        ...
+        E -> [b4, b5)
+    """
+
+    if not raw_anchors or group_size <= 0:
+        return []
+
+    anchors = list(raw_anchors)
+    if len(anchors) < group_size:
+        return []
+
+    # Si el número total no es múltiplo de 5, devolvemos lista vacía
+    if len(anchors) % group_size != 0:
+        return []
+
+    columnas_boundaries: List[List[int]] = []
+
+    # Se asume el mismo agrupamiento de 5 en 5 que en _compactar_columnas_respuestas
+    for i in range(0, len(anchors), group_size):
+        group = anchors[i : i + group_size]
+        if len(group) < group_size:
+            continue
+
+        # Ordenamos dentro del grupo de izquierda a derecha
+        group_sorted = sorted(group, key=lambda r: r[0])
+
+        # Centros X de cada barra (A–E)
+        centers = [a[0] + a[2] // 2 for a in group_sorted]
+        centers_arr = np.array(centers, dtype=float)
+
+        if centers_arr.size < 2:
+            continue
+
+        # Distancia típica entre opciones
+        diffs = np.diff(centers_arr)
+        step = float(np.median(diffs))
+
+        # Construimos boundaries como puntos medios entre centros
+        boundaries: List[int] = []
+
+        # Primer límite algo antes del centro de A
+        left0 = int(round(centers_arr[0] - step / 2.0))
+        boundaries.append(left0)
+
+        # Límites intermedios = punto medio entre centros consecutivos
+        for c1, c2 in zip(centers_arr[:-1], centers_arr[1:]):
+            boundaries.append(int(round((c1 + c2) / 2.0)))
+
+        # Último límite algo después del centro de E
+        right_last = int(round(centers_arr[-1] + step / 2.0))
+        boundaries.append(right_last)
+
+        columnas_boundaries.append(boundaries)
+
+    return columnas_boundaries
 
 
 def _normalized_inverted(region: np.ndarray) -> np.ndarray:
@@ -314,39 +566,73 @@ def _detectar_rectangulos_sync(
     return rects
 
 
-def _compactar_columnas_respuestas(
+def _calcular_boundaries_opciones(
     raw_anchors: Sequence[tuple[int, int, int, int]],
     group_size: int,
-) -> List[tuple[int, int, int, int]]:
-    """Agrupa las barras de respuestas en columnas lógicas (bloques de 5)."""
+) -> List[List[int]]:
+    """
+    A partir de las barras inferiores de respuestas (raw_anchors) calcula,
+    para cada columna de preguntas, los límites X de las opciones A–E.
 
-    if not raw_anchors:
+    Devuelve una lista de columnas; cada columna es una lista de 6 enteros:
+    boundaries[0..5] tales que:
+        A -> [b0, b1)
+        B -> [b1, b2)
+        ...
+        E -> [b4, b5)
+    """
+
+    if not raw_anchors or group_size <= 0:
         return []
 
     anchors = list(raw_anchors)
     if len(anchors) < group_size:
-        # No hay suficientes barras para una columna, devolver tal cual.
-        return list(anchors)
+        return []
 
-    columns: List[tuple[int, int, int, int]] = []
-    if len(anchors) % group_size == 0:
-        for i in range(0, len(anchors), group_size):
-            group = anchors[i : i + group_size]
-            xs = [a[0] for a in group]
-            ys = [a[1] for a in group]
-            x_ends = [a[0] + a[2] for a in group]
-            y_ends = [a[1] + a[3] for a in group]
+    # Si el número total no es múltiplo de 5, devolvemos lista vacía
+    if len(anchors) % group_size != 0:
+        return []
 
-            x = min(xs)
-            y = min(ys)
-            w = max(x_ends) - x
-            h = max(y_ends) - y
+    columnas_boundaries: List[List[int]] = []
 
-            columns.append((x, y, w, h))
-    else:
-        columns = anchors
+    # Se asume el mismo agrupamiento de 5 en 5 que en _compactar_columnas_respuestas
+    for i in range(0, len(anchors), group_size):
+        group = anchors[i : i + group_size]
+        if len(group) < group_size:
+            continue
 
-    return columns
+        # Ordenamos dentro del grupo de izquierda a derecha
+        group_sorted = sorted(group, key=lambda r: r[0])
+
+        # Centros X de cada barra (A–E)
+        centers = [a[0] + a[2] // 2 for a in group_sorted]
+        centers_arr = np.array(centers, dtype=float)
+
+        if centers_arr.size < 2:
+            continue
+
+        # Distancia típica entre opciones
+        diffs = np.diff(centers_arr)
+        step = float(np.median(diffs))
+
+        # Construimos boundaries como puntos medios entre centros
+        boundaries: List[int] = []
+
+        # Primer límite algo antes del centro de A
+        left0 = int(round(centers_arr[0] - step / 2.0))
+        boundaries.append(left0)
+
+        # Límites intermedios = punto medio entre centros consecutivos
+        for c1, c2 in zip(centers_arr[:-1], centers_arr[1:]):
+            boundaries.append(int(round((c1 + c2) / 2.0)))
+
+        # Último límite algo después del centro de E
+        right_last = int(round(centers_arr[-1] + step / 2.0))
+        boundaries.append(right_last)
+
+        columnas_boundaries.append(boundaries)
+
+    return columnas_boundaries
 
 
 # ---------------------------------------------------------------------------
@@ -437,6 +723,7 @@ def _clasificar_digito(
 def _leer_respuestas(
     gray: np.ndarray,
     columnas: Sequence[tuple[int, int, int, int]],
+    option_boundaries_per_column: Sequence[Sequence[int]] | None,
     config: OMRConfig,
     pagina: int,
 ) -> List[Respuesta]:
@@ -446,7 +733,7 @@ def _leer_respuestas(
 
     h, w = gray.shape
 
-    # Banda ajustada de respuestas
+    # Banda aproximada de respuestas
     y0 = int(h * config.answer_vertical_band[0])
     y1 = int(h * config.answer_vertical_band[1])
     if y1 - y0 < 1:
@@ -455,67 +742,97 @@ def _leer_respuestas(
     banda = gray[y0:y1, :]
     band_height = banda.shape[0]
 
-    answers_per_column = int(np.ceil(config.questions / len(columnas)))
+    num_columnas = len(columnas)
+    answers_per_column = int(np.ceil(config.questions / num_columnas))
     column_width = _estimacion_ancho_columnas(columnas)
     resultados: List[Respuesta] = []
 
+    # Rango X de cada columna lógica para perfilar filas
     x_ranges: List[tuple[int, int]] = []
-    for col in columnas:
+    for idx, col in enumerate(columnas):
         x_center = col[0] + col[2] // 2
-        x0 = max(x_center - column_width // 2, 0)
-        x1 = min(x_center + column_width // 2, w)
+
+        # Si tenemos boundaries específicos A–E para esta columna,
+        # usamos el mínimo y máximo como rango de columna.
+        if (
+            option_boundaries_per_column
+            and idx < len(option_boundaries_per_column)
+            and len(option_boundaries_per_column[idx]) >= 2
+        ):
+            bounds = option_boundaries_per_column[idx]
+            x0 = max(int(bounds[0]), 0)
+            x1 = min(int(bounds[-1]), w)
+        else:
+            # Fallback antiguo
+            x0 = max(x_center - column_width // 2, 0)
+            x1 = min(x_center + column_width // 2, w)
+
+        if x1 <= x0:
+            x1 = min(x0 + 1, w)
+
         x_ranges.append((x0, x1))
 
-    # Afinar la banda vertical en función de la tinta real de las columnas
+    # Afinar banda vertical
     adj_top, adj_bottom = _ajustar_banda_vertical(
         banda,
         x_ranges,
-        min_height=max(int(band_height * 0.85), 400 // max(len(columnas), 1)),
+        min_height=max(int(band_height * 0.85), 400 // max(num_columnas, 1)),
         activation_ratio=0.10,
     )
     banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
 
-    # Limites “ideales” de cada fila (0..band_height)
-    row_boundaries = np.linspace(0, band_height, answers_per_column + 1)
+    # boundaries de filas basados en perfil de burbujas
+    row_boundaries = _calcular_row_boundaries(
+        banda,
+        x_ranges,
+        answers_per_column,
+        config,
+    )
 
     for question_index in range(config.questions):
-        # qué columna lógica (0..3)
+        # columna lógica
         column_index = min(
             question_index // answers_per_column,
-            len(columnas) - 1,
+            num_columnas - 1,
         )
-        col = columnas[column_index]
-        x_center = col[0] + col[2] // 2
-        x0 = max(x_center - column_width // 2, 0)
-        x1 = min(x_center + column_width // 2, w)
 
-        if x1 <= x0:
-            x0 = max(min(x_center, w - 1), 0)
-            x1 = min(x0 + 1, w)
+        x0_col, x1_col = x_ranges[column_index]
 
-        # fila dentro de la columna (0..answers_per_column-1)
+        # fila dentro de la columna
         row_idx = question_index % answers_per_column
         row_top = float(row_boundaries[row_idx])
         row_bottom = float(row_boundaries[row_idx + 1])
         row_height = row_bottom - row_top
 
-        # centramos y tomamos todo el alto de fila (con pequeño margen)
         center = (row_top + row_bottom) / 2.0
         half_height = row_height * 0.50
 
         local_top = int(max(center - half_height, 0))
         local_bottom = int(min(center + half_height, band_height))
-
         if local_bottom <= local_top:
             local_bottom = min(local_top + 1, band_height)
 
-        sub = banda[local_top:local_bottom, x0:x1]
+        sub = banda[local_top:local_bottom, x0_col:x1_col]
+
+        # Boundaries específicos A–E para esta columna, en coordenadas locales
+        local_boundaries: list[int] | None = None
+        if (
+            option_boundaries_per_column
+            and column_index < len(option_boundaries_per_column)
+            and len(option_boundaries_per_column[column_index]) == len(config.answer_labels) + 1
+        ):
+            global_bounds = option_boundaries_per_column[column_index]
+            local_boundaries = [
+                max(0, min(int(b) - x0_col, x1_col - x0_col))
+                for b in global_bounds
+            ]
 
         alternativa, estado, intensidad = _clasificar_alternativa(
             sub,
             config.answer_labels,
             config,
+            x_boundaries=local_boundaries,
         )
 
         resultados.append(
@@ -528,6 +845,7 @@ def _leer_respuestas(
         )
 
     return resultados
+
 
 
 
@@ -546,19 +864,13 @@ def _clasificar_alternativa(
     answer_img: np.ndarray,
     labels: Sequence[str],
     config: OMRConfig,
+    x_boundaries: Sequence[int] | None = None,
 ) -> tuple[str, str, float]:
     """Determina la opción con más tinta y aplica reglas de negocio.
 
-    Reglas:
-    - Nunca se devuelve "MULTIPLES":
-      * Si hay ambigüedad (más de una alternativa fuerte), se considera EN BLANCO.
-    - Sólo se devuelve:
-      * ("<letra>", "OK", score) o
-      * ("-", "SIN RESPUESTA", score)
-
-    Técnica:
-    - Se recorta un margen izquierdo para evitar usar el número de la pregunta.
-    - Se combina gris invertido + binarización local (Otsu).
+    Si x_boundaries no es None, se asume que contiene len(labels)+1 límites X
+    (en coordenadas locales de answer_img) que definen exactamente las
+    regiones A–E. En ese caso NO se aplica left_margin ni reparto uniforme.
     """
 
     if answer_img.size == 0:
@@ -569,22 +881,33 @@ def _clasificar_alternativa(
     if w_sub <= 0 or h_sub <= 0:
         return ("-", "SIN RESPUESTA", 0.0)
 
-    # Recorte lateral para evitar el número de pregunta
-    left_margin = int(w_sub * config.answer_left_margin_ratio)
-    if left_margin >= w_sub:
-        left_margin = 0
-    right_img = gray[:, left_margin:]
+    # ---------- Recorte horizontal ----------
+    if x_boundaries is not None and len(x_boundaries) == len(labels) + 1:
+        # No aplicamos margen izquierdo: los boundaries ya vienen “limpios”.
+        right_img = gray
+        left_offset = 0
+        boundaries = np.array(
+            [max(0, min(int(b), w_sub)) for b in x_boundaries],
+            dtype=int,
+        )
+    else:
+        # Comportamiento anterior (pero podemos bajar el margen)
+        left_margin = int(w_sub * config.answer_left_margin_ratio)
+        if left_margin >= w_sub:
+            left_margin = 0
+        right_img = gray[:, left_margin:]
+        left_offset = left_margin
+        h_use, w_use = right_img.shape
+        if w_use <= 0:
+            right_img = gray
+            h_use, w_use = right_img.shape
+            left_offset = 0
+        boundaries = np.linspace(0, w_use, len(labels) + 1, dtype=int)
+
     h_use, w_use = right_img.shape
 
-    if w_use <= 0:
-        # Fallback sin recorte
-        right_img = gray
-        h_use, w_use = right_img.shape
-
-    # Invertido normalizado
+    # ---------- Medida de tinta ----------
     inv = cv2.bitwise_not(right_img).astype(np.float32) / 255.0
-
-    # Binarización local (Otsu) invertida
     blur = cv2.GaussianBlur(right_img, (5, 5), 0)
     _, bin_inv = cv2.threshold(
         blur,
@@ -593,11 +916,8 @@ def _clasificar_alternativa(
         cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU,
     )
 
-    cols = len(labels)
-    boundaries = np.linspace(0, w_use, cols + 1, dtype=int)
-
     scores: List[float] = []
-    for idx in range(cols):
+    for idx in range(len(labels)):
         x0 = boundaries[idx]
         x1 = boundaries[idx + 1]
         if x1 <= x0:
@@ -609,7 +929,6 @@ def _clasificar_alternativa(
         score_gray = float(cell_gray.mean()) if cell_gray.size else 0.0
         score_bin = float(cell_bin.mean()) / 255.0 if cell_bin.size else 0.0
 
-        # Peso más la binaria (tinta real), la gris sirve como refinamiento
         score = 0.3 * score_gray + 0.7 * score_bin
         scores.append(score)
 
@@ -626,10 +945,8 @@ def _clasificar_alternativa(
     second_score = float(sorted_scores[1]) if len(sorted_scores) > 1 else 0.0
 
     if best_score > 0.0 and second_score >= config.multi_mark_ratio * best_score:
-        # Regla que pediste: se considera en blanco
         return ("-", "SIN RESPUESTA", best_score)
 
-    # Caso normal: una única alternativa claramente dominante
     return (labels[best_idx], "OK", best_score)
 
 
@@ -732,7 +1049,7 @@ def _debug_answers_band_and_grid(
     h, w = gray.shape
     y0 = int(h * config.answer_vertical_band[0])
     y1 = int(h * config.answer_vertical_band[1])
-    if y1 - y0 < 1:
+    if y1 - y0 < 1 or not answer_columns:
         return
 
     banda_gray = gray[y0:y1, :]
@@ -747,6 +1064,7 @@ def _debug_answers_band_and_grid(
         x1 = min(x_center + column_width // 2, band_color.shape[1])
         x_ranges.append((x0, x1))
 
+    # Afinar banda vertical igual que en _leer_respuestas
     adj_top, adj_bottom = _ajustar_banda_vertical(
         banda_gray,
         x_ranges,
@@ -755,10 +1073,20 @@ def _debug_answers_band_and_grid(
     )
 
     band_color = band_color[adj_top:adj_bottom, :]
+    banda_gray = banda_gray[adj_top:adj_bottom, :]
     band_height = band_color.shape[0]
-    answers_per_column = int(np.ceil(config.questions / len(answer_columns)))
-    row_boundaries = np.linspace(0, band_height, answers_per_column + 1, dtype=int)
 
+    answers_per_column = int(np.ceil(config.questions / len(answer_columns)))
+
+    # *** boundaries calibrados por perfil ***
+    row_boundaries = _calcular_row_boundaries(
+        banda_gray,
+        x_ranges,
+        answers_per_column,
+        config,
+    ).astype(int)
+
+    # Dibujamos columnas y filas
     for col_idx, (x0, x1) in enumerate(x_ranges):
         cv2.rectangle(band_color, (x0, 0), (x1, band_height), (0, 255, 0), 1)
         cv2.putText(
@@ -773,7 +1101,8 @@ def _debug_answers_band_and_grid(
         )
 
         for rb in row_boundaries:
-            cv2.line(band_color, (x0, rb), (x1, rb), (255, 0, 0), 1)
+            y_rb = int(rb)
+            cv2.line(band_color, (x0, y_rb), (x1, y_rb), (255, 0, 0), 1)
 
     cv2.imwrite(str(out_dir / "05_answers_grid.png"), band_color)
 
