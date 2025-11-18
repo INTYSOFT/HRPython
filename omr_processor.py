@@ -132,9 +132,17 @@ def _detectar_centros_filas(
 
     col_img = banda_gray[:, x0:x1]
 
-    # Perfil de tinta: invertimos para que más tinta = valor mayor
-    inv = cv2.bitwise_not(col_img).astype(np.float32) / 255.0
-    profile = inv.mean(axis=1)  # promedio por fila
+    # --- Proyección horizontal del perfil de píxeles ---
+    # 1) Binarizamos (Otsu) e invertimos para que la tinta quede a 255.
+    _, bin_inv = cv2.threshold(
+        col_img,
+        0,
+        255,
+        cv2.THRESH_BINARY_INV | cv2.THRESH_OTSU,
+    )
+
+    # 2) Conteo de píxeles ON por fila.
+    profile = np.sum(bin_inv, axis=1).astype(np.float32) / 255.0
 
     if profile.size == 0:
         return np.array([], dtype=int)
