@@ -228,8 +228,14 @@ def _detectar_burbujas(
     x_ranges: Sequence[tuple[int, int]],
     expected_rows: int,
     config: OMRConfig,
+    options_per_row: int | None = None,
 ) -> list[tuple[int, int, int]]:
-    """Detecta burbujas mediante Hough y contornos filtrados."""
+    """Detecta burbujas mediante Hough y contornos filtrados.
+
+    options_per_row:
+        Si es None, se usa len(config.answer_labels) (modo preguntas).
+        Si es un entero (>0), se usa ese valor (por ejemplo 1 para el DNI).
+    """
 
     h_band, w_band = banda_gray.shape[:2]
     if h_band <= 0 or w_band <= 0:
@@ -248,7 +254,14 @@ def _detectar_burbujas(
     blurred = cv2.medianBlur(masked, blur_kernel)
 
     avg_width = np.median([x1 - x0 for x0, x1 in x_ranges]) if x_ranges else w_band
-    options = max(len(config.answer_labels), 1)
+
+    # <<< AQUÍ EL CAMBIO IMPORTANTE >>>
+    if options_per_row is not None and options_per_row > 0:
+        options = options_per_row
+    else:
+        options = max(len(config.answer_labels), 1)
+    # <<< FIN CAMBIO >>>
+
     option_width = avg_width / options
     radius_est = max(
         config.bubble_min_radius_px,
@@ -326,6 +339,161 @@ def _detectar_burbujas(
         )
 
     return centers
+
+def _calcular_row_boundaries_dni(
+    column_img: np.ndarray,
+    config: OMRConfig,
+) -> np.ndarray:
+    """
+    Devuelve los 11 límites horizontales (10 filas) para una columna de DNI.
+
+    - Usa detección de burbujas reales.
+    - No deja margen extra por arriba ni por abajo: va desde la primera burbuja
+      hasta la última.
+    """
+
+    gray = column_img
+    h_col, w_col = gray.shape
+    if h_col <= 0 or w_col <= 0:
+        return np.linspace(0, h_col, 11, dtype=float)
+
+    # Burbujas del DNI: 1 opción horizontal, 10 filas
+    burbujas = _detectar_burbujas(
+        gray,
+        x_ranges=[(0, w_col)],
+        expected_rows=10,
+        config=config,
+        options_per_row=1,  # 1 burbuja por fila
+    )
+
+    if not burbujas:
+        # Fallback: dividir en 10 partes iguales
+        return np.linspace(0, h_col, 11, dtype=float)
+
+    # --- Agrupar burbujas en filas (muy parecido a _calcular_row_boundaries_columna) ---
+    burbujas_sorted = sorted(burbujas, key=lambda p: p[1])
+
+    spacing_est = h_col / 10.0
+    tolerance = max(
+        config.bubble_min_radius_px * 1.5,
+        spacing_est * config.bubble_vertical_tolerance_ratio,
+    )
+
+    filas: list[list[tuple[int, int, int]]] = []
+    fila_actual: list[tuple[int, int, int]] = []
+    y_prev: float | None = None
+
+    for c in burbujas_sorted:
+        _, y, _ = c
+        if y_prev is None or abs(y - y_prev) <= tolerance:
+            fila_actual.append(c)
+        else:
+            if fila_actual:
+                filas.append(fila_actual)
+            fila_actual = [c]
+        y_prev = y
+    if fila_actual:
+        filas.append(fila_actual)
+
+    if not filas:
+        return np.linspace(0, h_col, 11, dtype=float)
+
+    # Si hay más filas que 10, fusionamos las que estén demasiado juntas
+    while len(filas) > 10:
+        centers = [np.mean([c[1] for c in fila]) for fila in filas]
+        gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
+        i_min = int(np.argmin(gaps))
+
+        if len(filas[i_min]) <= len(filas[i_min + 1]):
+            del filas[i_min]
+        else:
+            del filas[i_min + 1]
+
+    # Si hay menos de 10 filas, remuestreamos suavemente
+    if len(filas) < 10:
+        centers = np.array(
+            [np.mean([c[1] for c in fila]) for fila in filas],
+            dtype=float,
+        )
+        centers = np.linspace(centers[0], centers[-1], 10)
+        diffs = np.diff(centers)
+        step = float(np.median(diffs)) if diffs.size > 0 else h_col / 10.0
+
+        boundaries = np.zeros(11, dtype=float)
+        boundaries[0] = centers[0] - step / 2.0
+        for i in range(1, 10):
+            boundaries[i] = 0.5 * (centers[i - 1] + centers[i])
+        boundaries[10] = centers[-1] + step / 2.0
+        return np.clip(boundaries, 0.0, float(h_col))
+
+    # Caso normal: 10 filas de burbujas
+    centers: list[float] = []
+    tops: list[float] = []
+    bottoms: list[float] = []
+
+    for fila in filas:
+        ys = [c[1] for c in fila]
+        rs = [c[2] for c in fila]
+        center_y = float(np.mean(ys))
+        top_row = min(float(y - r) for y, r in zip(ys, rs))
+        bottom_row = max(float(y + r) for y, r in zip(ys, rs))
+        centers.append(center_y)
+        tops.append(top_row)
+        bottoms.append(bottom_row)
+
+    order = np.argsort(centers)
+    centers = [centers[i] for i in order]
+    tops = [tops[i] for i in order]
+    bottoms = [bottoms[i] for i in order]
+
+    centers_arr = np.array(centers, dtype=float)
+    tops_arr = np.array(tops, dtype=float)
+    bottoms_arr = np.array(bottoms, dtype=float)
+
+    # IMPORTANTE: sin margen extra
+    boundaries = np.zeros(11, dtype=float)
+    boundaries[0] = tops_arr[0]            # empieza en la primera burbuja (fila 0)
+    for i in range(1, 10):
+        boundaries[i] = 0.5 * (bottoms_arr[i - 1] + tops_arr[i])
+    boundaries[10] = bottoms_arr[-1]       # termina en la última burbuja (fila 9)
+
+    return np.clip(boundaries, 0.0, float(h_col))
+
+def _calcular_row_boundaries_dni_global(
+    banda_gray: np.ndarray,
+    x_ranges: Sequence[tuple[int, int]],
+    config: OMRConfig,
+) -> np.ndarray:
+    h_band, _ = banda_gray.shape[:2]
+    if h_band <= 0 or not x_ranges:
+        return np.linspace(0.0, float(h_band), 11, dtype=float)
+
+    row_boundaries_list: list[np.ndarray] = []
+    for x0, x1 in x_ranges:
+        col_img = banda_gray[:, x0:x1]
+        rb_col = _calcular_row_boundaries_dni(col_img, config)
+        if rb_col.size == 11:
+            row_boundaries_list.append(rb_col.astype(float))
+
+    if not row_boundaries_list:
+        return np.linspace(0.0, float(h_band), 11, dtype=float)
+
+    # 1) Mediana de las columnas para robustez frente a ruido
+    stack = np.vstack(row_boundaries_list)
+    median_boundaries = np.median(stack, axis=0)
+    median_boundaries = np.clip(median_boundaries, 0.0, float(h_band))
+
+    # 2) Regularizar: 10 filas IGUALMENTE ESPACIADAS entre top y bottom
+    top = float(median_boundaries[0])
+    bottom = float(median_boundaries[-1])
+
+    # Si algo vino muy raro, fallback a toda la banda
+    if bottom - top < h_band * 0.3:
+        top, bottom = 0.0, float(h_band)
+
+    global_boundaries = np.linspace(top, bottom, 11, dtype=float)
+    return global_boundaries
+
 
 def _calcular_row_boundaries_columna(
     col_img: np.ndarray,
@@ -1053,21 +1221,31 @@ def _leer_dni(
     marks_img: np.ndarray | None = None
     if marks_dir:
         marks_img = cv2.cvtColor(banda, cv2.COLOR_GRAY2BGR)
+    
+    # <<< NUEVO: rejilla GLOBAL de 10 filas para todo el bloque de DNI >>>
+    global_row_boundaries = _calcular_row_boundaries_dni_global(
+        banda,
+        x_ranges,
+        config,
+    )
 
     if debug_root:
         cv2.imwrite(str(debug_root / "dni_band_afinada.png"), banda)
 
     for idx, (x0, x1) in enumerate(x_ranges, start=1):
         sub = banda[:, x0:x1]
+
         digit = _clasificar_digito(
             sub,
             config,
             debug_dir=debug_root / "columnas" if debug_root else None,
             label=f"columna_{idx:02d}",
+            row_boundaries=global_row_boundaries,
         )
         digits.append(str(digit))
 
         if marks_img is not None:
+            # marco vertical de la columna
             cv2.rectangle(
                 marks_img,
                 (x0, 0),
@@ -1086,6 +1264,20 @@ def _leer_dni(
                 cv2.LINE_AA,
             )
 
+            # líneas horizontales globales de las 10 filas
+            for b in global_row_boundaries:
+                y = int(b)
+                cv2.line(
+                    marks_img,
+                    (x0, y),
+                    (max(x1 - 1, x0), y),
+                    (0, 0, 255),
+                    1,
+                )
+
+
+
+
     if debug_root:
         resumen_path = debug_root / "dni_resumen.txt"
         with open(resumen_path, "w", encoding="utf-8") as f:
@@ -1102,11 +1294,13 @@ def _clasificar_digito(
     config: OMRConfig,
     debug_dir: Path | None = None,
     label: str | None = None,
+    row_boundaries: np.ndarray | Sequence[float] | None = None,
 ) -> int:
     """
     Clasifica un dígito de DNI detectando las 10 burbujas en esta columna.
-    Usa burbujas reales para definir las 10 celdas, en lugar de cortar
-    en 10 partes iguales.
+
+    Si row_boundaries no es None, se usan esos límites (en coordenadas de
+    column_img) en lugar de recalcularlos.
     """
 
     gray = column_img
@@ -1114,49 +1308,28 @@ def _clasificar_digito(
     if h_col <= 0 or w_col <= 0:
         return 0
 
-    # Detectamos burbujas en la columna del DNI
-    burbujas = _detectar_burbujas(
-        gray,
-        x_ranges=[(0, w_col)],
-        expected_rows=10,
-        config=config,
-    )
-
-    centers = _agrupar_burbujas_por_fila(
-        burbujas,
-        expected_rows=10,
-        h_band=h_col,
-        config=config,
-    )
-
-    if centers.size == 0:
-        # Fallback: comportamiento anterior (10 cortes iguales)
-        normalized = _normalized_inverted(column_img)
-        height = normalized.shape[0]
-        boundaries = np.linspace(0, height, 11, dtype=int)
+    # --- 1) OBTENER LOS 11 LÍMITES DE FILA ---
+    if row_boundaries is not None:
+        boundaries = np.asarray(row_boundaries, dtype=float)
+        if boundaries.size != 11:
+            boundaries = _calcular_row_boundaries_dni(gray, config)
     else:
-        # Construimos boundaries alrededor de los centros detectados
-        centers = np.sort(centers)
-        if centers.size != 10:
-            centers = np.linspace(centers.min(), centers.max(), 10).astype(int)
+        boundaries = _calcular_row_boundaries_dni(gray, config)
 
-        diffs = np.diff(centers)
-        step = float(np.median(diffs)) if diffs.size > 0 else h_col / 10.0
+    if boundaries.size != 11:
+        boundaries = np.linspace(0.0, float(h_col), 11, dtype=float)
 
-        boundaries = np.zeros(11, dtype=int)
-        boundaries[0] = int(max(0, centers[0] - step / 2.0))
-        for i in range(1, 10):
-            boundaries[i] = int((centers[i - 1] + centers[i]) / 2.0)
-        boundaries[10] = int(min(h_col, centers[-1] + step / 2.0))
+    boundaries = np.clip(boundaries, 0.0, float(h_col))
+    boundaries_int = boundaries.astype(int)
 
-    # Medimos la "tinta" en cada una de las 10 celdas
+    # --- 2) MEDIR LA TINTA EN CADA UNA DE LAS 10 CELDAS ---
     normalized = _normalized_inverted(column_img)
     height = normalized.shape[0]
     scores: List[float] = []
 
     for i in range(10):
-        start = boundaries[i]
-        end = boundaries[i + 1]
+        start = int(boundaries_int[i])
+        end = int(boundaries_int[i + 1])
         if end <= start:
             end = min(start + 1, height)
         cell = normalized[start:end, :]
@@ -1164,14 +1337,16 @@ def _clasificar_digito(
 
     best_idx = int(np.argmax(scores))
 
+    # --- 3) DEBUG OPCIONAL ---
     if debug_dir is not None:
         debug_dir.mkdir(parents=True, exist_ok=True)
         col_label = label or "col"
         cv2.imwrite(str(debug_dir / f"{col_label}_raw.png"), column_img)
 
         vis = cv2.cvtColor(column_img, cv2.COLOR_GRAY2BGR)
-        for b in boundaries:
-            cv2.line(vis, (0, b), (vis.shape[1] - 1, b), (0, 0, 255), 1)
+        for b in boundaries_int:
+            y = int(b)
+            cv2.line(vis, (0, y), (vis.shape[1] - 1, y), (0, 0, 255), 1)
         cv2.imwrite(str(debug_dir / f"{col_label}_grid.png"), vis)
 
         log_path = debug_dir / f"{col_label}_scores.txt"
@@ -1180,11 +1355,10 @@ def _clasificar_digito(
             for idx, score in enumerate(scores):
                 f.write(f"{idx}: {score:.4f}\n")
 
-    # Mapear índice [0..9] al dígito real según la configuración
+    # --- 4) MAPEO A DÍGITO REAL ---
     if 0 <= best_idx < len(config.dni_digit_values):
         return int(config.dni_digit_values[best_idx])
     return int(best_idx)
-
 
 # ---------------------------------------------------------------------------
 # Lectura de respuestas
@@ -1672,21 +1846,20 @@ def _debug_dni_band(
     column_width = _estimacion_ancho_columnas(dni_anchors)
 
     x_ranges: List[tuple[int, int]] = []
-    for col in dni_anchors:
-        x_center = col[0] + col[2] // 2
-        x0 = max(x_center - column_width // 2, 0)
-        x1 = min(x_center + column_width // 2, w)
-        x_ranges.append((x0, x1))
+    for col_idx, (x0, x1) in enumerate(x_ranges):
+        col_img = banda_gray[:, x0:x1]
 
-    adj_top, adj_bottom = _ajustar_banda_vertical(
-        banda_gray,
-        x_ranges,
-        min_height=max(int(band_height * 0.8), 140),
-        activation_ratio=0.12,
-    )
+        # columna cruda
+        cv2.imwrite(str(out_dir / f"03_dni_col_{col_idx}.png"), col_img)
 
-    dni_band_color = image_bgr[band_top + adj_top : band_top + adj_bottom, :].copy()
-    cv2.imwrite(str(out_dir / "02_dni_band.png"), dni_band_color)
+        # columna con divisiones de filas basadas en burbujas reales
+        boundaries = _calcular_row_boundaries_dni(col_img, config)
+        col_vis = cv2.cvtColor(col_img, cv2.COLOR_GRAY2BGR)
+        for b in boundaries:
+            b = int(b)
+            cv2.line(col_vis, (0, b), (col_vis.shape[1] - 1, b), (0, 0, 255), 1)
+        cv2.imwrite(str(out_dir / f"04_dni_col_{col_idx}_grid.png"), col_vis)
+
 
     banda_gray = banda_gray[adj_top:adj_bottom, :]
 
