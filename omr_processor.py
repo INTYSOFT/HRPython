@@ -31,6 +31,26 @@ from models import AlumnoHoja, Respuesta
 # ---------------------------------------------------------------------------
 # Configuración
 # ---------------------------------------------------------------------------
+# ---------------------------------------------------------------------------
+# Logging simple a TXT (para depuración profunda)
+# ---------------------------------------------------------------------------
+DEBUG_TXT_ROOT = Path(r"D:\degubHR\txt")
+
+def _get_debug_txt_file(pagina: int) -> Path | None:
+    try:
+        DEBUG_TXT_ROOT.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        return None
+    return DEBUG_TXT_ROOT / f"pagina_{pagina:03d}.txt"
+
+
+def _log_debug(pagina: int, text: str) -> None:
+    debug_file = _get_debug_txt_file(pagina)
+    if debug_file is None:
+        return
+    with debug_file.open("a", encoding="utf-8") as f:
+        f.write(text + "\n")
+
 
 
 @dataclass
@@ -307,6 +327,136 @@ def _detectar_burbujas(
 
     return centers
 
+def _calcular_row_boundaries_columna(
+    col_img: np.ndarray,
+    answers_per_column: int,
+    config: OMRConfig,
+) -> np.ndarray:
+    h_band, w_band = col_img.shape[:2]
+    if h_band <= 0 or answers_per_column <= 0:
+        return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    # 1) Detectar burbujas SOLO en esta columna
+    burbujas = _detectar_burbujas(
+        col_img,
+        x_ranges=[(0, w_band)],
+        expected_rows=answers_per_column,
+        config=config,
+    )
+    if not burbujas:
+        # Sin burbujas fiables -> reparto lineal
+        return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    # ------------------------------------------------------------------
+    # 2) AGRUPAR BURBUJAS EN FILAS
+    # ------------------------------------------------------------------
+    burbujas_sorted = sorted(burbujas, key=lambda p: p[1])
+
+    spacing_est = h_band / max(answers_per_column, 1)
+    tolerance = max(
+        config.bubble_min_radius_px * 1.5,
+        spacing_est * config.bubble_vertical_tolerance_ratio,
+    )
+
+    filas: list[list[tuple[int, int, int]]] = []
+    fila_actual: list[tuple[int, int, int]] = []
+    y_prev: float | None = None
+
+    for c in burbujas_sorted:
+        _, y, _ = c
+        if y_prev is None or abs(y - y_prev) <= tolerance:
+            fila_actual.append(c)
+        else:
+            if fila_actual:
+                filas.append(fila_actual)
+            fila_actual = [c]
+        y_prev = y
+    if fila_actual:
+        filas.append(fila_actual)
+
+    if not filas:
+        return np.linspace(0, h_band, answers_per_column + 1, dtype=float)
+
+    # ------------------------------------------------------------------
+    # 3) SI HAY MÁS FILAS QUE PREGUNTAS, ELIMINAR LAS REDUNDANTES
+    #    (las que están demasiado pegadas a otra fila)
+    # ------------------------------------------------------------------
+    # Mientras haya más filas que preguntas, vamos fusionando
+    while len(filas) > answers_per_column:
+        # centro de cada fila
+        centers = [np.mean([c[1] for c in fila]) for fila in filas]
+        gaps = [centers[i + 1] - centers[i] for i in range(len(centers) - 1)]
+
+        # índice del gap más pequeño (dos filas casi duplicadas)
+        i_min = int(np.argmin(gaps))
+
+        # entre las dos filas del gap mínimo, nos quedamos con la que tenga
+        # MÁS burbujas (la buena) y eliminamos la otra
+        if len(filas[i_min]) <= len(filas[i_min + 1]):
+            del filas[i_min]
+        else:
+            del filas[i_min + 1]
+
+    # Si por ruido tenemos menos filas de las esperadas, estiramos suavemente
+    if len(filas) < answers_per_column:
+        centers = np.array(
+            [np.mean([c[1] for c in fila]) for fila in filas],
+            dtype=float,
+        )
+        centers = np.linspace(centers[0], centers[-1], answers_per_column)
+        tops = centers - spacing_est * 0.4
+        bottoms = centers + spacing_est * 0.4
+    else:
+        # Caso normal: una fila por cada pregunta
+        centers = []
+        tops = []
+        bottoms = []
+        for fila in filas:
+            ys = [c[1] for c in fila]
+            rs = [c[2] for c in fila]
+            center_y = float(np.mean(ys))
+            top_row = min(float(y - r) for y, r in zip(ys, rs))
+            bottom_row = max(float(y + r) for y, r in zip(ys, rs))
+            centers.append(center_y)
+            tops.append(top_row)
+            bottoms.append(bottom_row)
+
+        order = np.argsort(centers)
+        centers = np.array([centers[i] for i in order], dtype=float)
+        tops = np.array([tops[i] for i in order], dtype=float)
+        bottoms = np.array([bottoms[i] for i in order], dtype=float)
+
+    n_rows = len(centers)
+
+    # ------------------------------------------------------------------
+    # 4) CONSTRUIR FRONTERAS ENTRE FILAS USANDO top/bottom
+    # ------------------------------------------------------------------
+    typical_step = float(np.median(np.diff(centers))) if n_rows > 1 else spacing_est
+    margin = max(1.0, 0.10 * typical_step)
+
+    boundaries_detected = np.zeros(n_rows + 1, dtype=float)
+    boundaries_detected[0] = max(0.0, float(tops[0]) - margin)
+    for i in range(1, n_rows):
+        boundaries_detected[i] = 0.5 * (bottoms[i - 1] + tops[i])
+    boundaries_detected[-1] = min(float(h_band), float(bottoms[-1]) + margin)
+
+    boundaries_detected = np.clip(boundaries_detected, 0.0, float(h_band))
+    boundaries_detected = np.sort(boundaries_detected)
+
+    # Si n_rows == answers_per_column -> perfecto
+    if n_rows == answers_per_column:
+        return boundaries_detected
+
+    # Si todavía no coincide exactamente, remuestreamos SOLO dentro del rango
+    return np.linspace(
+        boundaries_detected[0],
+        boundaries_detected[-1],
+        answers_per_column + 1,
+        dtype=float,
+    )
+
+
+
 
 def _agrupar_burbujas_por_fila(
     centers: Sequence[tuple[int, int, int]],
@@ -450,6 +600,21 @@ def procesar_pdf(
     resultados: List[AlumnoHoja] = []
 
     for index, page in enumerate(doc, start=1):
+        # inicializamos log de la página
+        debug_file = _get_debug_txt_file(index)
+        if debug_file is not None:
+            with debug_file.open("w", encoding="utf-8") as f:
+                f.write(f"=== Página {index} ===\n")
+
+        image_bgr, img_path = _render_page(page, cache_dir, index, config.dpi)
+        anchors = _detectar_rectangulos_sync(image_bgr, config)
+
+        _log_debug(
+            index,
+            f"[anchors] total={len(anchors)}, dni_columns={config.dni_columns}, "
+            f"anchors={anchors}",
+        )
+
         image_bgr, img_path = _render_page(page, cache_dir, index, config.dpi)
         anchors = _detectar_rectangulos_sync(image_bgr, config)
 
@@ -938,14 +1103,55 @@ def _clasificar_digito(
     debug_dir: Path | None = None,
     label: str | None = None,
 ) -> int:
-    """Divide la columna en 10 celdas horizontales y escoge la de mayor tinta."""
+    """
+    Clasifica un dígito de DNI detectando las 10 burbujas en esta columna.
+    Usa burbujas reales para definir las 10 celdas, en lugar de cortar
+    en 10 partes iguales.
+    """
 
-    normalized = _normalized_inverted(column_img)
-    height = normalized.shape[0]
-    if height <= 0:
+    gray = column_img
+    h_col, w_col = gray.shape
+    if h_col <= 0 or w_col <= 0:
         return 0
 
-    boundaries = np.linspace(0, height, 11, dtype=int)
+    # Detectamos burbujas en la columna del DNI
+    burbujas = _detectar_burbujas(
+        gray,
+        x_ranges=[(0, w_col)],
+        expected_rows=10,
+        config=config,
+    )
+
+    centers = _agrupar_burbujas_por_fila(
+        burbujas,
+        expected_rows=10,
+        h_band=h_col,
+        config=config,
+    )
+
+    if centers.size == 0:
+        # Fallback: comportamiento anterior (10 cortes iguales)
+        normalized = _normalized_inverted(column_img)
+        height = normalized.shape[0]
+        boundaries = np.linspace(0, height, 11, dtype=int)
+    else:
+        # Construimos boundaries alrededor de los centros detectados
+        centers = np.sort(centers)
+        if centers.size != 10:
+            centers = np.linspace(centers.min(), centers.max(), 10).astype(int)
+
+        diffs = np.diff(centers)
+        step = float(np.median(diffs)) if diffs.size > 0 else h_col / 10.0
+
+        boundaries = np.zeros(11, dtype=int)
+        boundaries[0] = int(max(0, centers[0] - step / 2.0))
+        for i in range(1, 10):
+            boundaries[i] = int((centers[i - 1] + centers[i]) / 2.0)
+        boundaries[10] = int(min(h_col, centers[-1] + step / 2.0))
+
+    # Medimos la "tinta" en cada una de las 10 celdas
+    normalized = _normalized_inverted(column_img)
+    height = normalized.shape[0]
     scores: List[float] = []
 
     for i in range(10):
@@ -974,7 +1180,7 @@ def _clasificar_digito(
             for idx, score in enumerate(scores):
                 f.write(f"{idx}: {score:.4f}\n")
 
-    # Mapear índice de fila (0–9) al dígito real según la configuración.
+    # Mapear índice [0..9] al dígito real según la configuración
     if 0 <= best_idx < len(config.dni_digit_values):
         return int(config.dni_digit_values[best_idx])
     return int(best_idx)
@@ -1016,6 +1222,12 @@ def _leer_respuestas(
     banda = gray[y0:y1, :]
     band_height = banda.shape[0]
 
+    _log_debug(
+        pagina,
+        f"[respuestas] banda_y=({y0},{y1}), band_height={band_height}, "
+        f"num_columnas={len(columnas)}",
+    )
+
     if debug_root:
         cv2.imwrite(str(debug_root / "respuestas_band_cruda.png"), banda)
 
@@ -1024,13 +1236,20 @@ def _leer_respuestas(
     column_width = _estimacion_ancho_columnas(columnas)
     resultados: List[Respuesta] = []
 
-    # Rango X de cada columna lógica para perfilar filas
+    # Rango X de cada columna lógica
     x_ranges: List[tuple[int, int]] = []
+
+
+    _log_debug(
+        pagina,
+        f"[respuestas] answers_per_column={answers_per_column}, "
+        f"x_ranges={x_ranges}",
+    )
+
+
     for idx, col in enumerate(columnas):
         x_center = col[0] + col[2] // 2
 
-        # Si tenemos boundaries específicos A–E para esta columna,
-        # usamos el mínimo y máximo como rango de columna.
         if (
             option_boundaries_per_column
             and idx < len(option_boundaries_per_column)
@@ -1040,7 +1259,6 @@ def _leer_respuestas(
             x0 = max(int(bounds[0]), 0)
             x1 = min(int(bounds[-1]), w)
         else:
-            # Fallback antiguo
             x0 = max(x_center - column_width // 2, 0)
             x1 = min(x_center + column_width // 2, w)
 
@@ -1049,13 +1267,20 @@ def _leer_respuestas(
 
         x_ranges.append((x0, x1))
 
-    # Afinar banda vertical
+    # Afinar banda vertical usando las columnas
     adj_top, adj_bottom = _ajustar_banda_vertical(
         banda,
         x_ranges,
         min_height=max(int(band_height * 0.85), 400 // max(num_columnas, 1)),
         activation_ratio=0.10,
     )
+
+    _log_debug(
+        pagina,
+        f"[respuestas] adj_top={adj_top}, adj_bottom={adj_bottom}, "
+        f"band_height_orig={band_height}",
+    )
+
     banda = banda[adj_top:adj_bottom, :]
     band_height = banda.shape[0]
 
@@ -1066,14 +1291,78 @@ def _leer_respuestas(
     if debug_root:
         cv2.imwrite(str(debug_root / "respuestas_band_afinada.png"), banda)
 
-    # boundaries de filas basados en perfil de burbujas
-    row_boundaries = _calcular_row_boundaries(
-        banda,
-        x_ranges,
-        answers_per_column,
-        config,
-    )
+    # ---- NUEVO: boundaries por columna (usando burbujas) ----
+        row_boundaries_per_column: list[np.ndarray] = []
+    for col_idx, (x0, x1) in enumerate(x_ranges):
+        col_img = banda[:, x0:x1]
+        rb_col = _calcular_row_boundaries_columna(
+            col_img,
+            answers_per_column,
+            config,
+        )
 
+        row_boundaries_per_column.append(rb_col)
+
+        # ---- DEBUG PROFUNDO POR COLUMNA ----
+        try:
+            # Re-detectamos burbujas sólo para logging
+            burb_dbg = _detectar_burbujas(
+                col_img,
+                x_ranges=[(0, col_img.shape[1])],
+                expected_rows=answers_per_column,
+                config=config,
+            )
+            centers_dbg = _agrupar_burbujas_por_fila(
+                burb_dbg,
+                expected_rows=answers_per_column,
+                h_band=col_img.shape[0],
+                config=config,
+            )
+
+            _log_debug(
+                pagina,
+                f"[col {col_idx+1}] x0={x0}, x1={x1}, "
+                f"h={col_img.shape[0]}, w={col_img.shape[1]}",
+            )
+            _log_debug(
+                pagina,
+                f"[col {col_idx+1}] burbujas_detectadas={burb_dbg}",
+            )
+            _log_debug(
+                pagina,
+                f"[col {col_idx+1}] centros_y={centers_dbg.tolist() if centers_dbg.size else []}",
+            )
+            _log_debug(
+                pagina,
+                f"[col {col_idx+1}] row_boundaries={rb_col.tolist()}",
+            )
+
+            # Heurística: detectar boundaries que cortan burbujas
+            if burb_dbg:
+                ys = np.array([b[1] for b in burb_dbg], dtype=float)
+                rs = np.array([b[2] for b in burb_dbg], dtype=float)
+                for rb in rb_col:
+                    dists = np.abs(ys - float(rb))
+                    k = int(dists.argmin())
+                    dy = float(dists[k])
+                    r = float(rs[k]) if rs[k] > 0 else 1.0
+                    # Si el límite está muy cerca del centro (menos de la mitad del radio)
+                    if dy <= 0.5 * r:
+                        _log_debug(
+                            pagina,
+                            (
+                                f"[WARNING col {col_idx+1}] boundary_y={rb} muy cerca "
+                                f"de centro_burbuja_y={ys[k]} (dy={dy:.1f}, r={r:.1f})"
+                            ),
+                        )
+        except Exception as e:
+            _log_debug(
+                pagina,
+                f"[col {col_idx+1}] ERROR en logging de burbujas: {e}",
+            )
+
+
+    # Dibujo opcional de debug
     if marks_img is not None:
         for col_idx, (x0, x1) in enumerate(x_ranges):
             cv2.rectangle(
@@ -1094,29 +1383,40 @@ def _leer_respuestas(
                 cv2.LINE_AA,
             )
 
-        for rb in row_boundaries:
-            y_rb = int(rb)
-            cv2.line(
-                marks_img,
-                (0, y_rb),
-                (marks_img.shape[1] - 1, y_rb),
-                (0, 200, 0),
-                1,
-            )
+            rb_col = row_boundaries_per_column[col_idx]
+            for rb in rb_col:
+                y_rb = int(rb)
+                cv2.line(
+                    marks_img,
+                    (x0, y_rb),
+                    (x1, y_rb),
+                    (0, 200, 0),
+                    1,
+                )
 
+    # ------------------------------------------------------------------ lectura
     for question_index in range(config.questions):
-        # columna lógica
+        # Columna lógica
         column_index = min(
             question_index // answers_per_column,
             num_columnas - 1,
         )
 
         x0_col, x1_col = x_ranges[column_index]
+        rb_col = row_boundaries_per_column[column_index]
 
-        # fila dentro de la columna
+        # Fila dentro de la columna
         row_idx = question_index % answers_per_column
-        row_top = float(row_boundaries[row_idx])
-        row_bottom = float(row_boundaries[row_idx + 1])
+
+        # Si quieres anclar explícitamente a la parte INFERIOR,
+        # puedes invertir el índice:
+        # row_idx_from_bottom = answers_per_column - 1 - row_idx
+        # pero como numbering de preguntas va de arriba a abajo,
+        # normalmente mantenemos row_idx tal cual.
+        row_idx_from_top = row_idx
+
+        row_top = float(rb_col[row_idx_from_top])
+        row_bottom = float(rb_col[row_idx_from_top + 1])
         row_height = row_bottom - row_top
 
         center = (row_top + row_bottom) / 2.0
@@ -1169,6 +1469,7 @@ def _leer_respuestas(
         cv2.imwrite(str(marks_dir / "respuestas_marcas.png"), marks_img)
 
     return resultados
+
 
 
 
@@ -1386,7 +1687,7 @@ def _debug_answers_band_and_grid(
     config: OMRConfig,
     out_dir: Path,
 ) -> None:
-    """Guarda banda de respuestas y grid de columnas/filas."""
+    """Guarda banda de respuestas y grid de columnas/filas usando boundaries por columna."""
 
     h, w = gray.shape
     y0 = int(h * config.answer_vertical_band[0])
@@ -1394,16 +1695,20 @@ def _debug_answers_band_and_grid(
     if y1 - y0 < 1 or not answer_columns:
         return
 
+    # Banda de respuestas (gris y color)
     banda_gray = gray[y0:y1, :]
     band_color = image_bgr[y0:y1, :].copy()
     band_height = band_color.shape[0]
 
+    # Rango X de cada columna lógica (igual que en _leer_respuestas)
     column_width = _estimacion_ancho_columnas(answer_columns)
     x_ranges: List[tuple[int, int]] = []
     for col in answer_columns:
         x_center = col[0] + col[2] // 2
         x0 = max(x_center - column_width // 2, 0)
         x1 = min(x_center + column_width // 2, band_color.shape[1])
+        if x1 <= x0:
+            x1 = min(x0 + 1, band_color.shape[1])
         x_ranges.append((x0, x1))
 
     # Afinar banda vertical igual que en _leer_respuestas
@@ -1420,20 +1725,24 @@ def _debug_answers_band_and_grid(
 
     answers_per_column = int(np.ceil(config.questions / len(answer_columns)))
 
-    # *** boundaries calibrados por perfil ***
-    row_boundaries = _calcular_row_boundaries(
-        banda_gray,
-        x_ranges,
-        answers_per_column,
-        config,
-    ).astype(int)
+    # ---- boundaries por columna usando burbujas (lo mismo que en _leer_respuestas) ----
+    row_boundaries_per_column: list[np.ndarray] = []
+    for col_idx, (x0, x1) in enumerate(x_ranges):
+        col_img = banda_gray[:, x0:x1]
+        rb_col = _calcular_row_boundaries_columna(
+            col_img,
+            answers_per_column,
+            config,
+        ).astype(int)
+        row_boundaries_per_column.append(rb_col)
 
     # Dibujamos columnas y filas
     for col_idx, (x0, x1) in enumerate(x_ranges):
+        # rectángulo de la columna
         cv2.rectangle(band_color, (x0, 0), (x1, band_height), (0, 255, 0), 1)
         cv2.putText(
             band_color,
-            f"C{col_idx}",
+            f"C{col_idx+1}",
             (x0 + 2, 12),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.4,
@@ -1442,7 +1751,9 @@ def _debug_answers_band_and_grid(
             cv2.LINE_AA,
         )
 
-        for rb in row_boundaries:
+        # líneas horizontales de esa columna según sus propias burbujas
+        rb_col = row_boundaries_per_column[col_idx]
+        for rb in rb_col:
             y_rb = int(rb)
             cv2.line(band_color, (x0, y_rb), (x1, y_rb), (255, 0, 0), 1)
 
