@@ -1291,8 +1291,10 @@ def _leer_respuestas(
     if debug_root:
         cv2.imwrite(str(debug_root / "respuestas_band_afinada.png"), banda)
 
-    # ---- NUEVO: boundaries por columna (usando burbujas) ----
-        row_boundaries_per_column: list[np.ndarray] = []
+        # ---- NUEVO: boundaries por columna (usando burbujas) ----
+    row_boundaries_per_column: list[np.ndarray] = []
+    centers_acumulados: list[np.ndarray] = []
+
     for col_idx, (x0, x1) in enumerate(x_ranges):
         col_img = banda[:, x0:x1]
         rb_col = _calcular_row_boundaries_columna(
@@ -1303,9 +1305,13 @@ def _leer_respuestas(
 
         row_boundaries_per_column.append(rb_col)
 
+        # Si esta columna ha dado un grid "completo", guardamos sus centros
+        if rb_col.size == answers_per_column + 1:
+            centers = 0.5 * (rb_col[:-1] + rb_col[1:])
+            centers_acumulados.append(centers.astype(float))
+
         # ---- DEBUG PROFUNDO POR COLUMNA ----
         try:
-            # Re-detectamos burbujas sólo para logging
             burb_dbg = _detectar_burbujas(
                 col_img,
                 x_ranges=[(0, col_img.shape[1])],
@@ -1334,35 +1340,58 @@ def _leer_respuestas(
             )
             _log_debug(
                 pagina,
-                f"[col {col_idx+1}] row_boundaries={rb_col.tolist()}",
+                f"[col {col_idx+1}] row_boundaries_col={rb_col.tolist()}",
             )
-
-            # Heurística: detectar boundaries que cortan burbujas
-            if burb_dbg:
-                ys = np.array([b[1] for b in burb_dbg], dtype=float)
-                rs = np.array([b[2] for b in burb_dbg], dtype=float)
-                for rb in rb_col:
-                    dists = np.abs(ys - float(rb))
-                    k = int(dists.argmin())
-                    dy = float(dists[k])
-                    r = float(rs[k]) if rs[k] > 0 else 1.0
-                    # Si el límite está muy cerca del centro (menos de la mitad del radio)
-                    if dy <= 0.5 * r:
-                        _log_debug(
-                            pagina,
-                            (
-                                f"[WARNING col {col_idx+1}] boundary_y={rb} muy cerca "
-                                f"de centro_burbuja_y={ys[k]} (dy={dy:.1f}, r={r:.1f})"
-                            ),
-                        )
         except Exception as e:
             _log_debug(
                 pagina,
                 f"[col {col_idx+1}] ERROR en logging de burbujas: {e}",
             )
 
+    # ---- REJILLA VERTICAL GLOBAL (MISMA PARA TODAS LAS COLUMNAS) ----
+    if centers_acumulados:
+        centers_stack = np.vstack(centers_acumulados)
+        # media o mediana; la mediana es más robusta
+        global_centers = np.median(centers_stack, axis=0)
 
-    # Dibujo opcional de debug
+        diffs = np.diff(global_centers)
+        step = float(np.median(diffs)) if diffs.size > 0 else band_height / answers_per_column
+
+        global_boundaries = np.zeros(answers_per_column + 1, dtype=float)
+        global_boundaries[0] = max(0.0, global_centers[0] - step / 2.0)
+        for i in range(1, answers_per_column):
+            global_boundaries[i] = 0.5 * (global_centers[i - 1] + global_centers[i])
+        global_boundaries[-1] = min(float(band_height), global_centers[-1] + step / 2.0)
+
+        global_boundaries = np.clip(global_boundaries, 0.0, float(band_height))
+
+        _log_debug(
+            pagina,
+            f"[GLOBAL] centers={global_centers.tolist()}, boundaries={global_boundaries.tolist()}",
+        )
+    else:
+        # Fallbacks: si algo fue raro, usamos la primera columna o, en último caso, reparto lineal
+        if row_boundaries_per_column and row_boundaries_per_column[0].size == answers_per_column + 1:
+            global_boundaries = row_boundaries_per_column[0].astype(float)
+            _log_debug(
+                pagina,
+                "[GLOBAL] usando boundaries de la primera columna como fallback",
+            )
+        else:
+            global_boundaries = np.linspace(
+                0.0,
+                float(band_height),
+                answers_per_column + 1,
+                dtype=float,
+            )
+            _log_debug(
+                pagina,
+                "[GLOBAL] usando boundaries lineales como fallback",
+            )
+
+
+
+        # Dibujo opcional de debug
     if marks_img is not None:
         for col_idx, (x0, x1) in enumerate(x_ranges):
             cv2.rectangle(
@@ -1383,8 +1412,8 @@ def _leer_respuestas(
                 cv2.LINE_AA,
             )
 
-            rb_col = row_boundaries_per_column[col_idx]
-            for rb in rb_col:
+            # Todas las columnas comparten la MISMA rejilla vertical
+            for rb in global_boundaries:
                 y_rb = int(rb)
                 cv2.line(
                     marks_img,
@@ -1393,6 +1422,7 @@ def _leer_respuestas(
                     (0, 200, 0),
                     1,
                 )
+
 
     # ------------------------------------------------------------------ lectura
     for question_index in range(config.questions):
@@ -1403,20 +1433,15 @@ def _leer_respuestas(
         )
 
         x0_col, x1_col = x_ranges[column_index]
-        rb_col = row_boundaries_per_column[column_index]
 
-        # Fila dentro de la columna
+        # Fila dentro de la columna (desde arriba)
         row_idx = question_index % answers_per_column
-
-        # Si quieres anclar explícitamente a la parte INFERIOR,
-        # puedes invertir el índice:
-        # row_idx_from_bottom = answers_per_column - 1 - row_idx
-        # pero como numbering de preguntas va de arriba a abajo,
-        # normalmente mantenemos row_idx tal cual.
         row_idx_from_top = row_idx
 
-        row_top = float(rb_col[row_idx_from_top])
-        row_bottom = float(rb_col[row_idx_from_top + 1])
+        # Usamos SIEMPRE la rejilla GLOBAL
+        row_top = float(global_boundaries[row_idx_from_top])
+        row_bottom = float(global_boundaries[row_idx_from_top + 1])
+
         row_height = row_bottom - row_top
 
         center = (row_top + row_bottom) / 2.0
