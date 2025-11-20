@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
+import json
 import tempfile
+from datetime import date, datetime
 from pathlib import Path
 from typing import List
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 import pandas as pd
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFileDialog,
+    QComboBox,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -31,6 +36,8 @@ from omr_processor import OMRConfig, procesar_pdf
 class MainWindow(QMainWindow):
     """Ventana principal con estilo moderno y paneles divididos."""
 
+    API_BASE = "http://192.168.1.50:5000"
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Lector OMR")
@@ -39,8 +46,10 @@ class MainWindow(QMainWindow):
         self.cache_dir = Path(tempfile.mkdtemp(prefix="omr_cache_"))
         self.resultados: List[AlumnoHoja] = []
         self.config = OMRConfig()
+        self.evaluaciones: List[dict] = []
 
         self._build_ui()
+        self._load_evaluaciones()
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -49,11 +58,15 @@ class MainWindow(QMainWindow):
 
         # Barra de acciones
         toolbar = QHBoxLayout()
+        self.combo_evaluaciones = QComboBox()
+        self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
+        self.combo_evaluaciones.setMinimumWidth(280)
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
         self.btn_export = QPushButton("Exportar resultados")
         self.lbl_file = QLabel("Ningún archivo seleccionado")
 
+        toolbar.addWidget(self.combo_evaluaciones)
         toolbar.addWidget(self.btn_load)
         toolbar.addWidget(self.btn_process)
         toolbar.addWidget(self.btn_export)
@@ -143,6 +156,16 @@ class MainWindow(QMainWindow):
             QScrollArea {
                 border: none;
             }
+            QComboBox {
+                padding: 6px 10px;
+                border-radius: 8px;
+                border: 1px solid #c8c8c8;
+                background-color: #ffffff;
+                min-width: 260px;
+            }
+            QComboBox:focus {
+                border-color: #90c7d8;
+            }
             """
         )
         self.lbl_file.setObjectName("fileLabel")
@@ -198,6 +221,88 @@ class MainWindow(QMainWindow):
             return
         row = selected[0].row()
         self._mostrar_detalle(row)
+
+    # -------------------------------------------------------- evaluaciones API
+    def _load_evaluaciones(self, estado_id: int = 1) -> None:
+        """Obtiene las evaluaciones desde el API y llena el desplegable."""
+
+        self.combo_evaluaciones.clear()
+        self.combo_evaluaciones.addItem("Cargando evaluaciones...", None)
+
+        url = f"{self.API_BASE.rstrip('/')}/estado/{estado_id}"
+        try:
+            with urlopen(
+                Request(url, headers={"Accept": "application/json"}), timeout=10
+            ) as response:
+                raw_data = response.read()
+            payload = json.loads(raw_data)
+        except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+            self._handle_evaluacion_error(
+                f"No se pudo conectar al servicio de evaluaciones ({exc})."
+            )
+            return
+        except json.JSONDecodeError as exc:  # pragma: no cover - validación de datos
+            self._handle_evaluacion_error(
+                f"Respuesta inválida del servicio de evaluaciones ({exc})."
+            )
+            return
+
+        if not isinstance(payload, list):
+            self._handle_evaluacion_error("Formato inesperado al leer evaluaciones.")
+            return
+
+        self.evaluaciones = self._normalize_evaluaciones(payload)
+        if not self.evaluaciones:
+            self._handle_evaluacion_error("No se encontraron evaluaciones disponibles.")
+            return
+
+        self.combo_evaluaciones.clear()
+        for evaluacion in self.evaluaciones:
+            display = f"{evaluacion['nombre']} - {evaluacion['fecha_inicio']}"
+            self.combo_evaluaciones.addItem(display, evaluacion)
+        self.statusBar().showMessage("Evaluaciones cargadas", 4000)
+
+    def _handle_evaluacion_error(self, message: str) -> None:
+        self.combo_evaluaciones.clear()
+        self.combo_evaluaciones.addItem("No se pudieron cargar las evaluaciones", None)
+        self.statusBar().showMessage(message, 5000)
+
+    def _normalize_evaluaciones(self, payload: List[dict]) -> List[dict]:
+        normalizadas: List[dict] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            nombre = item.get("nombre") or item.get("Nombre")
+            if not nombre:
+                continue
+            fecha_val = (
+                item.get("fechaInicio")
+                or item.get("fecha_inicio")
+                or item.get("FechaInicio")
+            )
+            fecha_texto = self._format_fecha(fecha_val)
+            normalizadas.append(
+                {
+                    "id": item.get("id") or item.get("Id"),
+                    "nombre": nombre,
+                    "fecha_inicio": fecha_texto,
+                }
+            )
+        return normalizadas
+
+    def _format_fecha(self, fecha: object) -> str:
+        if fecha is None:
+            return "Sin fecha"
+        if isinstance(fecha, datetime):
+            return fecha.date().strftime("%d/%m/%Y")
+        if isinstance(fecha, date):
+            return fecha.strftime("%d/%m/%Y")
+        if isinstance(fecha, str):
+            try:
+                return date.fromisoformat(fecha).strftime("%d/%m/%Y")
+            except ValueError:
+                return fecha
+        return str(fecha)
 
     # ------------------------------------------------------------- helpers UI
     def _llenar_tabla_alumnos(self) -> None:
