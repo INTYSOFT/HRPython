@@ -6,7 +6,7 @@ import json
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
-from typing import List
+from typing import Dict, List
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -46,6 +46,9 @@ class MainWindow(QMainWindow):
         self.pdf_path: Path | None = None
         self.cache_dir = Path(tempfile.mkdtemp(prefix="omr_cache_"))
         self.resultados: List[AlumnoHoja] = []
+        self.resultados_por_dni: Dict[str, AlumnoHoja] = {}
+        self.resultados_no_asignados: List[AlumnoHoja] = []
+        self._sincronizando_no_encontrados = False
         self.config = OMRConfig()
         self.evaluaciones: List[dict] = []
         self.evaluacion_detalle: List[dict] = []
@@ -84,16 +87,27 @@ class MainWindow(QMainWindow):
         splitter = QSplitter()
         splitter.setOrientation(Qt.Orientation.Horizontal)
 
-        # Tabla de alumnos
-        self.table_students = QTableWidget(0, 6)
+        # Panel izquierdo (alumnos y no encontrados)
+        left_panel = QWidget()
+        left_layout = QVBoxLayout(left_panel)
+
+        self.table_students = QTableWidget(0, 5)
         self.table_students.setHorizontalHeaderLabels(
-            ["#", "Página", "DNI", "Alumno", "Ciclo", "Sección"]
+            ["Página", "DNI", "Alumno", "Ciclo", "Sección"]
         )
         self.table_students.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_students.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table_students.verticalHeader().setVisible(False)
         self.table_students.setAlternatingRowColors(True)
-        splitter.addWidget(self.table_students)
+        left_layout.addWidget(self.table_students, stretch=3)
+
+        self.table_not_found = QTableWidget(0, 2)
+        self.table_not_found.setHorizontalHeaderLabels(["Página", "DNI"])
+        self.table_not_found.verticalHeader().setVisible(False)
+        self.table_not_found.setAlternatingRowColors(True)
+        left_layout.addWidget(self.table_not_found, stretch=1)
+
+        splitter.addWidget(left_panel)
 
         # Panel derecho (imagen + respuestas)
         right_panel = QWidget()
@@ -199,6 +213,7 @@ class MainWindow(QMainWindow):
             self._on_evaluacion_changed
         )
         self.combo_secciones.currentIndexChanged.connect(self._on_seccion_changed)
+        self.table_not_found.itemChanged.connect(self._on_not_found_item_changed)
 
     # --------------------------------------------------------------- acciones
     def _on_load_pdf(self) -> None:
@@ -220,7 +235,7 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Error procesando", str(exc))
             self.statusBar().clearMessage()
             return
-        self._llenar_tabla_alumnos()
+        self._integrar_resultados_en_tablas()
         self.statusBar().showMessage("Procesamiento finalizado", 5000)
 
     def _on_export(self) -> None:
@@ -291,6 +306,7 @@ class MainWindow(QMainWindow):
         self.combo_evaluaciones.clear()
         self.combo_evaluaciones.addItem("No se pudieron cargar las evaluaciones", None)
         self.statusBar().showMessage(message, 5000)
+        self._reset_resultados()
 
     def _handle_detalle_error(self, message: str) -> None:
         QMessageBox.warning(self, "Consulta de evaluación", message)
@@ -340,6 +356,7 @@ class MainWindow(QMainWindow):
         if not data or not data.get("id"):
             self._reset_secciones()
             self._llenar_tabla_evaluacion([])
+            self._reset_resultados()
             return
         self._consultar_evaluacion_programada(int(data["id"]))
 
@@ -380,6 +397,8 @@ class MainWindow(QMainWindow):
             self._llenar_tabla_evaluacion([])
             return
 
+        self._reset_resultados()
+
         self._poblar_secciones()
         self._llenar_tabla_evaluacion([])
         self.statusBar().showMessage("Evaluación cargada correctamente", 5000)
@@ -398,13 +417,7 @@ class MainWindow(QMainWindow):
             normalizadas.append(
                 {
                     "orden": idx,
-                    "pagina": (
-                        item.get("pagina")
-                        or item.get("Pagina")
-                        or item.get("EvaluacionId")
-                        or item.get("evaluacionId")  # ← camelCase
-                        or idx
-                    ),
+                    "pagina": "",
                     "dni": item.get("AlumnoDni") or item.get("alumnoDni") or "",
                     "alumno": nombre_completo,
                     "ciclo": item.get("Ciclo") or item.get("ciclo") or "",
@@ -442,6 +455,7 @@ class MainWindow(QMainWindow):
         self.combo_secciones.clear()
         self.combo_secciones.addItem("Sin secciones", None)
         self.combo_secciones.blockSignals(False)
+        self._llenar_tabla_evaluacion([])
 
     def _on_seccion_changed(self, index: int) -> None:
         if index < 0:
@@ -450,53 +464,143 @@ class MainWindow(QMainWindow):
         if filtro is None:
             self._llenar_tabla_evaluacion([])
             return
-
-        datos = self.evaluacion_detalle
-        if filtro != self.ALL_SECTIONS_KEY:
-            datos = [item for item in self.evaluacion_detalle if item.get("seccion") == filtro]
-
-        self._llenar_tabla_evaluacion(datos)
+        self._refrescar_tabla_filtrada()
 
     # ------------------------------------------------------------- helpers UI
-    def _llenar_tabla_alumnos(self) -> None:
-        self.table_students.setRowCount(0)
-        for idx, alumno in enumerate(self.resultados, start=1):
-            row = self.table_students.rowCount()
-            self.table_students.insertRow(row)
-            self.table_students.setItem(row, 0, QTableWidgetItem(str(idx)))
-            self.table_students.setItem(row, 1, QTableWidgetItem(str(alumno.pagina)))
-            self.table_students.setItem(row, 2, QTableWidgetItem(alumno.dni))
-            self.table_students.setItem(row, 3, QTableWidgetItem(""))
-            self.table_students.setItem(row, 4, QTableWidgetItem(""))
-            self.table_students.setItem(row, 5, QTableWidgetItem(""))
-        if self.resultados:
-            self.table_students.selectRow(0)
-
     def _llenar_tabla_evaluacion(self, alumnos: List[dict]) -> None:
         self.table_students.setRowCount(0)
-        for idx, alumno in enumerate(alumnos, start=1):
+        for alumno in alumnos:
             row = self.table_students.rowCount()
             self.table_students.insertRow(row)
-            self.table_students.setItem(row, 0, QTableWidgetItem(str(idx)))
-            self.table_students.setItem(row, 1, QTableWidgetItem(str(alumno.get("pagina", ""))))
-            self.table_students.setItem(row, 2, QTableWidgetItem(alumno.get("dni", "")))
-            self.table_students.setItem(row, 3, QTableWidgetItem(alumno.get("alumno", "")))
-            self.table_students.setItem(row, 4, QTableWidgetItem(alumno.get("ciclo", "")))
-            self.table_students.setItem(row, 5, QTableWidgetItem(alumno.get("seccion", "")))
+            self.table_students.setItem(
+                row, 0, QTableWidgetItem(str(alumno.get("pagina", "")))
+            )
+            self.table_students.setItem(row, 1, QTableWidgetItem(alumno.get("dni", "")))
+            self.table_students.setItem(
+                row, 2, QTableWidgetItem(alumno.get("alumno", ""))
+            )
+            self.table_students.setItem(row, 3, QTableWidgetItem(alumno.get("ciclo", "")))
+            self.table_students.setItem(row, 4, QTableWidgetItem(alumno.get("seccion", "")))
         if alumnos:
             self.table_students.selectRow(0)
-        # Evitar confusión con el detalle de OMR cuando la tabla muestra datos remotos.
+
+    def _refrescar_tabla_filtrada(self) -> None:
+        filtro = self.combo_secciones.currentData()
+        datos = self.evaluacion_detalle
+        if filtro is None:
+            datos = []
+        elif filtro != self.ALL_SECTIONS_KEY:
+            datos = [item for item in self.evaluacion_detalle if item.get("seccion") == filtro]
+        self._llenar_tabla_evaluacion(datos)
+
+    def _reset_resultados(self) -> None:
         self.resultados = []
+        self.resultados_por_dni.clear()
+        self.resultados_no_asignados = []
+        self._sincronizando_no_encontrados = True
+        self.table_not_found.setRowCount(0)
+        self._sincronizando_no_encontrados = False
+        self.table_answers.setRowCount(0)
+        self.image_label.clear()
+        self.image_label.setText("Seleccione un alumno")
+
+    def _integrar_resultados_en_tablas(self) -> None:
+        alumnos_por_dni = {
+            (item.get("dni") or "").strip(): item
+            for item in self.evaluacion_detalle
+            if item.get("dni")
+        }
+
+        for item in self.evaluacion_detalle:
+            item["pagina"] = item.get("pagina") or ""
+
+        self.resultados_por_dni.clear()
+        self.resultados_no_asignados = []
+
+        for resultado in self.resultados:
+            dni_normalizado = resultado.dni.strip()
+            if dni_normalizado and dni_normalizado in alumnos_por_dni:
+                alumnos_por_dni[dni_normalizado]["pagina"] = resultado.pagina
+                self.resultados_por_dni[dni_normalizado] = resultado
+            else:
+                self.resultados_no_asignados.append(resultado)
+
+        self._poblar_no_encontrados()
+        self._refrescar_tabla_filtrada()
+
+    def _poblar_no_encontrados(self) -> None:
+        self._sincronizando_no_encontrados = True
+        self.table_not_found.setRowCount(0)
+        for resultado in self.resultados_no_asignados:
+            row = self.table_not_found.rowCount()
+            self.table_not_found.insertRow(row)
+            pagina_item = QTableWidgetItem(str(resultado.pagina))
+            pagina_item.setData(Qt.ItemDataRole.UserRole, resultado)
+            pagina_item.setFlags(pagina_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            dni_item = QTableWidgetItem(resultado.dni)
+            dni_item.setData(Qt.ItemDataRole.UserRole, resultado)
+            self.table_not_found.setItem(row, 0, pagina_item)
+            self.table_not_found.setItem(row, 1, dni_item)
+        self._sincronizando_no_encontrados = False
+
+    def _on_not_found_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._sincronizando_no_encontrados:
+            return
+        if item.column() != 1:
+            return
+
+        fila = item.row()
+        pagina_item = self.table_not_found.item(fila, 0)
+        if not pagina_item:
+            return
+
+        resultado: AlumnoHoja | None = pagina_item.data(Qt.ItemDataRole.UserRole)
+        if resultado is None:
+            return
+
+        nuevo_dni = item.text().strip()
+        if not nuevo_dni:
+            return
+
+        match = next(
+            (al for al in self.evaluacion_detalle if al.get("dni") == nuevo_dni), None
+        )
+        if not match:
+            return
+
+        resultado.dni = nuevo_dni
+        match["pagina"] = resultado.pagina
+        self.resultados_por_dni[nuevo_dni] = resultado
+
+        self._sincronizando_no_encontrados = True
+        self.table_not_found.removeRow(fila)
+        self._sincronizando_no_encontrados = False
+
+        try:
+            self.resultados_no_asignados.remove(resultado)
+        except ValueError:
+            pass
+
+        self._refrescar_tabla_filtrada()
 
     def _mostrar_detalle(self, index: int) -> None:
-        if not (0 <= index < len(self.resultados)):
+        if index < 0 or index >= self.table_students.rowCount():
             return
-        alumno = self.resultados[index]
+        dni_item = self.table_students.item(index, 1)
+        if not dni_item:
+            return
+        dni = dni_item.text().strip()
+        alumno = self.resultados_por_dni.get(dni)
+        if not alumno:
+            self._mostrar_imagen(None)
+            self._llenar_tabla_respuestas([])
+            return
         self._mostrar_imagen(alumno.imagen_path)
         self._llenar_tabla_respuestas(alumno.respuestas)
 
     def _mostrar_imagen(self, path: Path | None) -> None:
         if not path or not path.exists():
+            self.image_label.clear()
             self.image_label.setText("Imagen no disponible")
             return
         pix = QPixmap(str(path))
