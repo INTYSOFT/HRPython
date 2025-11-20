@@ -47,6 +47,7 @@ class MainWindow(QMainWindow):
         self.resultados: List[AlumnoHoja] = []
         self.config = OMRConfig()
         self.evaluaciones: List[dict] = []
+        self.evaluacion_detalle: List[dict] = []
 
         self._build_ui()
         self._load_evaluaciones()
@@ -61,12 +62,16 @@ class MainWindow(QMainWindow):
         self.combo_evaluaciones = QComboBox()
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
         self.combo_evaluaciones.setMinimumWidth(280)
+        self.combo_secciones = QComboBox()
+        self.combo_secciones.setPlaceholderText("Todas las secciones")
+        self.combo_secciones.setMinimumWidth(200)
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
         self.btn_export = QPushButton("Exportar resultados")
         self.lbl_file = QLabel("Ningún archivo seleccionado")
 
         toolbar.addWidget(self.combo_evaluaciones)
+        toolbar.addWidget(self.combo_secciones)
         toolbar.addWidget(self.btn_load)
         toolbar.addWidget(self.btn_process)
         toolbar.addWidget(self.btn_export)
@@ -79,8 +84,10 @@ class MainWindow(QMainWindow):
         splitter.setOrientation(Qt.Orientation.Horizontal)
 
         # Tabla de alumnos
-        self.table_students = QTableWidget(0, 3)
-        self.table_students.setHorizontalHeaderLabels(["#", "Página", "DNI"])
+        self.table_students = QTableWidget(0, 6)
+        self.table_students.setHorizontalHeaderLabels(
+            ["#", "Página", "DNI", "Alumno", "Ciclo", "Sección"]
+        )
         self.table_students.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
         self.table_students.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.table_students.verticalHeader().setVisible(False)
@@ -166,6 +173,13 @@ class MainWindow(QMainWindow):
             QComboBox:focus {
                 border-color: #90c7d8;
             }
+            QComboBox QListView {
+                background-color: #ffffff;
+                border-radius: 8px;
+            }
+            QSplitter::handle {
+                background-color: #d8e2dc;
+            }
             """
         )
         self.lbl_file.setObjectName("fileLabel")
@@ -175,6 +189,10 @@ class MainWindow(QMainWindow):
         self.btn_process.clicked.connect(self._on_process)
         self.btn_export.clicked.connect(self._on_export)
         self.table_students.itemSelectionChanged.connect(self._on_student_selected)
+        self.combo_evaluaciones.currentIndexChanged.connect(
+            self._on_evaluacion_changed
+        )
+        self.combo_secciones.currentIndexChanged.connect(self._on_seccion_changed)
 
     # --------------------------------------------------------------- acciones
     def _on_load_pdf(self) -> None:
@@ -261,10 +279,15 @@ class MainWindow(QMainWindow):
             display = f"{evaluacion['nombre']} - {evaluacion['fecha_inicio']}"
             self.combo_evaluaciones.addItem(display, evaluacion)
         self.statusBar().showMessage("Evaluaciones cargadas", 4000)
+        self._reset_secciones()
 
     def _handle_evaluacion_error(self, message: str) -> None:
         self.combo_evaluaciones.clear()
         self.combo_evaluaciones.addItem("No se pudieron cargar las evaluaciones", None)
+        self.statusBar().showMessage(message, 5000)
+
+    def _handle_detalle_error(self, message: str) -> None:
+        QMessageBox.warning(self, "Consulta de evaluación", message)
         self.statusBar().showMessage(message, 5000)
 
     def _normalize_evaluaciones(self, payload: List[dict]) -> List[dict]:
@@ -304,6 +327,107 @@ class MainWindow(QMainWindow):
                 return fecha
         return str(fecha)
 
+    def _on_evaluacion_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        data = self.combo_evaluaciones.currentData()
+        if not data or not data.get("id"):
+            self._reset_secciones()
+            self._llenar_tabla_evaluacion([])
+            return
+        self._consultar_evaluacion_programada(int(data["id"]))
+
+    def _consultar_evaluacion_programada(self, evaluacion_programada_id: int) -> None:
+        """Consulta el API por alumnos asociados a la evaluación seleccionada."""
+
+        url = f"{self.API_BASE.rstrip('/')}/consulta/evaluaciones-programadas/{evaluacion_programada_id}"
+        try:
+            with urlopen(
+                Request(url, headers={"Accept": "application/json"}), timeout=10
+            ) as response:
+                raw_data = response.read()
+            payload = json.loads(raw_data)
+        except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+            self._handle_detalle_error(
+                f"No se pudo consultar la evaluación seleccionada ({exc})."
+            )
+            return
+        except json.JSONDecodeError as exc:  # pragma: no cover - validación remota
+            self._handle_detalle_error(
+                f"Respuesta inválida del servicio de consulta ({exc})."
+            )
+            return
+
+        if not isinstance(payload, list):
+            self._handle_detalle_error("Formato inesperado al leer los alumnos.")
+            return
+
+        self.evaluacion_detalle = self._normalize_evaluacion_detalle(payload)
+        if not self.evaluacion_detalle:
+            self._handle_detalle_error("No se encontraron alumnos para la evaluación.")
+            self._reset_secciones()
+            self._llenar_tabla_evaluacion([])
+            return
+
+        self._poblar_secciones()
+        self._llenar_tabla_evaluacion(self.evaluacion_detalle)
+        self.statusBar().showMessage("Evaluación cargada correctamente", 5000)
+
+    def _normalize_evaluacion_detalle(self, payload: List[dict]) -> List[dict]:
+        normalizadas: List[dict] = []
+        for idx, item in enumerate(payload, start=1):
+            if not isinstance(item, dict):
+                continue
+            apellidos = item.get("AlumnoApellidos") or ""
+            nombres = item.get("AlumnoNombres") or ""
+            nombre_completo = f"{apellidos} {nombres}".strip()
+            normalizadas.append(
+                {
+                    "orden": idx,
+                    "pagina": item.get("pagina")
+                    or item.get("Pagina")
+                    or item.get("EvaluacionId")
+                    or idx,
+                    "dni": item.get("AlumnoDni") or "",
+                    "alumno": nombre_completo,
+                    "ciclo": item.get("Ciclo") or "",
+                    "seccion": item.get("Seccion") or "",
+                }
+            )
+        return normalizadas
+
+    def _poblar_secciones(self) -> None:
+        secciones = []
+        vistos = set()
+        for item in self.evaluacion_detalle:
+            nombre = item.get("seccion") or ""
+            if nombre and nombre not in vistos:
+                vistos.add(nombre)
+                secciones.append(nombre)
+
+        self.combo_secciones.blockSignals(True)
+        self.combo_secciones.clear()
+        self.combo_secciones.addItem("Todas las secciones", None)
+        for sec in secciones:
+            self.combo_secciones.addItem(sec, sec)
+        self.combo_secciones.setCurrentIndex(0)
+        self.combo_secciones.blockSignals(False)
+
+    def _reset_secciones(self) -> None:
+        self.combo_secciones.blockSignals(True)
+        self.combo_secciones.clear()
+        self.combo_secciones.addItem("Sin secciones", None)
+        self.combo_secciones.blockSignals(False)
+
+    def _on_seccion_changed(self, index: int) -> None:
+        if index < 0:
+            return
+        filtro = self.combo_secciones.currentData()
+        datos = self.evaluacion_detalle
+        if filtro:
+            datos = [item for item in self.evaluacion_detalle if item.get("seccion") == filtro]
+        self._llenar_tabla_evaluacion(datos)
+
     # ------------------------------------------------------------- helpers UI
     def _llenar_tabla_alumnos(self) -> None:
         self.table_students.setRowCount(0)
@@ -313,8 +437,27 @@ class MainWindow(QMainWindow):
             self.table_students.setItem(row, 0, QTableWidgetItem(str(idx)))
             self.table_students.setItem(row, 1, QTableWidgetItem(str(alumno.pagina)))
             self.table_students.setItem(row, 2, QTableWidgetItem(alumno.dni))
+            self.table_students.setItem(row, 3, QTableWidgetItem(""))
+            self.table_students.setItem(row, 4, QTableWidgetItem(""))
+            self.table_students.setItem(row, 5, QTableWidgetItem(""))
         if self.resultados:
             self.table_students.selectRow(0)
+
+    def _llenar_tabla_evaluacion(self, alumnos: List[dict]) -> None:
+        self.table_students.setRowCount(0)
+        for idx, alumno in enumerate(alumnos, start=1):
+            row = self.table_students.rowCount()
+            self.table_students.insertRow(row)
+            self.table_students.setItem(row, 0, QTableWidgetItem(str(idx)))
+            self.table_students.setItem(row, 1, QTableWidgetItem(str(alumno.get("pagina", ""))))
+            self.table_students.setItem(row, 2, QTableWidgetItem(alumno.get("dni", "")))
+            self.table_students.setItem(row, 3, QTableWidgetItem(alumno.get("alumno", "")))
+            self.table_students.setItem(row, 4, QTableWidgetItem(alumno.get("ciclo", "")))
+            self.table_students.setItem(row, 5, QTableWidgetItem(alumno.get("seccion", "")))
+        if alumnos:
+            self.table_students.selectRow(0)
+        # Evitar confusión con el detalle de OMR cuando la tabla muestra datos remotos.
+        self.resultados = []
 
     def _mostrar_detalle(self, index: int) -> None:
         if not (0 <= index < len(self.resultados)):
