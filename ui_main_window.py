@@ -105,6 +105,12 @@ class MainWindow(QMainWindow):
         self.table_not_found.setHorizontalHeaderLabels(["Página", "DNI"])
         self.table_not_found.verticalHeader().setVisible(False)
         self.table_not_found.setAlternatingRowColors(True)
+        self.table_not_found.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.table_not_found.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
         left_layout.addWidget(self.table_not_found, stretch=1)
 
         splitter.addWidget(left_panel)
@@ -209,6 +215,9 @@ class MainWindow(QMainWindow):
         self.btn_process.clicked.connect(self._on_process)
         self.btn_export.clicked.connect(self._on_export)
         self.table_students.itemSelectionChanged.connect(self._on_student_selected)
+        self.table_not_found.itemSelectionChanged.connect(
+            self._on_not_found_selected
+        )
         self.combo_evaluaciones.currentIndexChanged.connect(
             self._on_evaluacion_changed
         )
@@ -259,7 +268,18 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         row = selected[0].row()
-        self._mostrar_detalle(row)
+        self._mostrar_detalle_por_indice(row)
+
+    def _on_not_found_selected(self) -> None:
+        selected = self.table_not_found.selectedIndexes()
+        if not selected:
+            return
+        row = selected[0].row()
+        pagina_item = self.table_not_found.item(row, 0)
+        if not pagina_item:
+            return
+        resultado: AlumnoHoja | None = pagina_item.data(Qt.ItemDataRole.UserRole)
+        self._mostrar_detalle_alumno(resultado)
 
     # -------------------------------------------------------- evaluaciones API
     def _load_evaluaciones(self, estado_id: int = 2) -> None:
@@ -583,7 +603,7 @@ class MainWindow(QMainWindow):
 
         self._refrescar_tabla_filtrada()
 
-    def _mostrar_detalle(self, index: int) -> None:
+    def _mostrar_detalle_por_indice(self, index: int) -> None:
         if index < 0 or index >= self.table_students.rowCount():
             return
         dni_item = self.table_students.item(index, 1)
@@ -591,6 +611,9 @@ class MainWindow(QMainWindow):
             return
         dni = dni_item.text().strip()
         alumno = self.resultados_por_dni.get(dni)
+        self._mostrar_detalle_alumno(alumno)
+
+    def _mostrar_detalle_alumno(self, alumno: AlumnoHoja | None) -> None:
         if not alumno:
             self._mostrar_imagen(None)
             self._llenar_tabla_respuestas([])
