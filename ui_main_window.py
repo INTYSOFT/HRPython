@@ -37,6 +37,7 @@ class MainWindow(QMainWindow):
     """Ventana principal con estilo moderno y paneles divididos."""
 
     API_BASE = "http://192.168.1.50:5000"
+    ALL_SECTIONS_KEY = "__all__"
 
     def __init__(self) -> None:
         super().__init__()
@@ -63,7 +64,7 @@ class MainWindow(QMainWindow):
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
         self.combo_evaluaciones.setMinimumWidth(280)
         self.combo_secciones = QComboBox()
-        self.combo_secciones.setPlaceholderText("Todas las secciones")
+        self.combo_secciones.setPlaceholderText("Seleccione sección")
         self.combo_secciones.setMinimumWidth(200)
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
@@ -126,61 +127,66 @@ class MainWindow(QMainWindow):
         self.setStyleSheet(
             """
             QWidget {
-                background-color: #f6f6f6;
+                background-color: #f8fafc;
                 font-family: 'Segoe UI', 'Open Sans', sans-serif;
                 color: #1f1f1f;
             }
             QPushButton {
-                background-color: #A9D6E5;
-                padding: 8px 16px;
-                border-radius: 8px;
-                border: none;
-                font-weight: bold;
+                background-color: #b8e0d2;
+                padding: 10px 18px;
+                border-radius: 10px;
+                border: 1px solid #a1d2c5;
+                font-weight: 600;
+                letter-spacing: 0.2px;
             }
             QPushButton:hover {
-                background-color: #90c7d8;
+                background-color: #a5d6c9;
             }
             QPushButton:pressed {
-                background-color: #78b8cb;
+                background-color: #8ac3b4;
             }
             QTableWidget {
                 background-color: #ffffff;
-                border: 1px solid #dcdcdc;
-                border-radius: 10px;
-                gridline-color: #c8c8c8;
-                selection-background-color: #E2D4FF;
-                alternate-background-color: #F2FBF7;
+                border: 1px solid #dfe7ef;
+                border-radius: 12px;
+                gridline-color: #d0d9e2;
+                selection-background-color: #e4d7ff;
+                selection-color: #1f1f1f;
+                alternate-background-color: #f4f7fb;
             }
             QHeaderView::section {
-                background-color: #CDE8D7;
+                background-color: #d5e8f3;
                 border: none;
-                padding: 6px;
-                font-weight: bold;
+                padding: 8px;
+                font-weight: 600;
+                color: #0f172a;
             }
             QLabel#fileLabel {
-                color: #555555;
+                color: #4b5563;
             }
             QScrollArea {
                 border: none;
             }
             QComboBox {
-                padding: 6px 10px;
-                border-radius: 8px;
-                border: 1px solid #c8c8c8;
+                padding: 8px 12px;
+                border-radius: 10px;
+                border: 1px solid #cfd8e3;
                 background-color: #ffffff;
                 min-width: 260px;
             }
             QComboBox:focus {
-                border-color: #90c7d8;
+                border-color: #a5d6c9;
+                box-shadow: 0 0 0 3px rgba(165, 214, 201, 0.35);
             }
             QComboBox QListView {
                 background-color: #ffffff;
-                border-radius: 8px;
+                border-radius: 10px;
+                padding: 4px 0;
             }
             QSplitter::handle {
-                background-color: #d8e2dc;
+                background-color: #e1e7ef;
             }
-            """
+        """
         )
         self.lbl_file.setObjectName("fileLabel")
 
@@ -375,7 +381,7 @@ class MainWindow(QMainWindow):
             return
 
         self._poblar_secciones()
-        self._llenar_tabla_evaluacion(self.evaluacion_detalle)
+        self._llenar_tabla_evaluacion([])
         self.statusBar().showMessage("Evaluación cargada correctamente", 5000)
 
     def _normalize_evaluacion_detalle(self, payload: List[dict]) -> List[dict]:
@@ -402,17 +408,21 @@ class MainWindow(QMainWindow):
         return normalizadas
 
     def _poblar_secciones(self) -> None:
-        secciones = []
-        vistos = set()
+        secciones: list[str] = []
+        vistos: set[str] = set()
         for item in self.evaluacion_detalle:
-            nombre = item.get("seccion") or ""
+            nombre = (item.get("seccion") or "").strip()
             if nombre and nombre not in vistos:
                 vistos.add(nombre)
                 secciones.append(nombre)
 
+        secciones.sort(key=str.casefold)
+
         self.combo_secciones.blockSignals(True)
         self.combo_secciones.clear()
-        self.combo_secciones.addItem("Todas las secciones", None)
+        self.combo_secciones.addItem("Seleccione sección", None)
+        if secciones:
+            self.combo_secciones.addItem("Todas las secciones", self.ALL_SECTIONS_KEY)
         for sec in secciones:
             self.combo_secciones.addItem(sec, sec)
         self.combo_secciones.setCurrentIndex(0)
@@ -428,9 +438,14 @@ class MainWindow(QMainWindow):
         if index < 0:
             return
         filtro = self.combo_secciones.currentData()
+        if filtro is None:
+            self._llenar_tabla_evaluacion([])
+            return
+
         datos = self.evaluacion_detalle
-        if filtro:
+        if filtro != self.ALL_SECTIONS_KEY:
             datos = [item for item in self.evaluacion_detalle if item.get("seccion") == filtro]
+
         self._llenar_tabla_evaluacion(datos)
 
     # ------------------------------------------------------------- helpers UI
