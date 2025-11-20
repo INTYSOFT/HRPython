@@ -389,23 +389,30 @@ class MainWindow(QMainWindow):
         for idx, item in enumerate(payload, start=1):
             if not isinstance(item, dict):
                 continue
-            apellidos = item.get("AlumnoApellidos") or ""
-            nombres = item.get("AlumnoNombres") or ""
+
+            # Soportar ambas variantes de nombre
+            apellidos = item.get("AlumnoApellidos") or item.get("alumnoApellidos") or ""
+            nombres = item.get("AlumnoNombres") or item.get("alumnoNombres") or ""
             nombre_completo = f"{apellidos} {nombres}".strip()
+
             normalizadas.append(
                 {
                     "orden": idx,
-                    "pagina": item.get("pagina")
-                    or item.get("Pagina")
-                    or item.get("EvaluacionId")
-                    or idx,
-                    "dni": item.get("AlumnoDni") or "",
+                    "pagina": (
+                        item.get("pagina")
+                        or item.get("Pagina")
+                        or item.get("EvaluacionId")
+                        or item.get("evaluacionId")  # ← camelCase
+                        or idx
+                    ),
+                    "dni": item.get("AlumnoDni") or item.get("alumnoDni") or "",
                     "alumno": nombre_completo,
-                    "ciclo": item.get("Ciclo") or "",
-                    "seccion": item.get("Seccion") or "",
+                    "ciclo": item.get("Ciclo") or item.get("ciclo") or "",
+                    "seccion": item.get("Seccion") or item.get("seccion") or "",
                 }
             )
         return normalizadas
+
 
     def _poblar_secciones(self) -> None:
         secciones: list[str] = []
@@ -421,8 +428,10 @@ class MainWindow(QMainWindow):
         self.combo_secciones.blockSignals(True)
         self.combo_secciones.clear()
         self.combo_secciones.addItem("Seleccione sección", None)
-        if secciones:
-            self.combo_secciones.addItem("Todas las secciones", self.ALL_SECTIONS_KEY)
+        
+        #if secciones:
+        #   self.combo_secciones.addItem("Todas las secciones", self.ALL_SECTIONS_KEY)
+            
         for sec in secciones:
             self.combo_secciones.addItem(sec, sec)
         self.combo_secciones.setCurrentIndex(0)
