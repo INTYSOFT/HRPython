@@ -241,13 +241,13 @@ class MainWindow(QMainWindow):
         self._mostrar_detalle(row)
 
     # -------------------------------------------------------- evaluaciones API
-    def _load_evaluaciones(self, estado_id: int = 1) -> None:
+    def _load_evaluaciones(self, estado_id: int = 2) -> None:
         """Obtiene las evaluaciones desde el API y llena el desplegable."""
 
         self.combo_evaluaciones.clear()
         self.combo_evaluaciones.addItem("Cargando evaluaciones...", None)
 
-        url = f"{self.API_BASE.rstrip('/')}/estado/{estado_id}"
+        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionProgramadums/estado/{estado_id}"
         try:
             with urlopen(
                 Request(url, headers={"Accept": "application/json"}), timeout=10
@@ -341,6 +341,11 @@ class MainWindow(QMainWindow):
         """Consulta el API por alumnos asociados a la evaluación seleccionada."""
 
         url = f"{self.API_BASE.rstrip('/')}/consulta/evaluaciones-programadas/{evaluacion_programada_id}"
+        #mostrar mensaje url
+        self.statusBar().showMessage(f"Consultando: {url}", 0)
+        
+
+
         try:
             with urlopen(
                 Request(url, headers={"Accept": "application/json"}), timeout=10
