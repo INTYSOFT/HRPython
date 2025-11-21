@@ -15,6 +15,7 @@ import pandas as pd
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QPixmap, QColor, QImage
 from PyQt6.QtWidgets import (
+    QAbstractSpinBox,
     QFileDialog,
     QComboBox,
     QLabel,
@@ -29,6 +30,7 @@ from PyQt6.QtWidgets import (
     QWidget,
     QHBoxLayout,
     QProgressBar,
+    QSpinBox,
 )
 
 from models import AlumnoHoja, Respuesta
@@ -73,6 +75,9 @@ class MainWindow(QMainWindow):
     API_BASE = "http://192.168.1.50:5000"
     ALL_SECTIONS_KEY = "__all__"
     PREVIEW_DPI = 300
+    MIN_ZOOM = 0.5
+    MAX_ZOOM = 3.0
+    ZOOM_STEP = 0.25
 
     def __init__(self) -> None:
         super().__init__()
@@ -89,6 +94,8 @@ class MainWindow(QMainWindow):
         self.evaluacion_detalle: List[dict] = []
         self._default_status_style = self.statusBar().styleSheet()
         self._pdf_doc: fitz.Document | None = None
+        self._current_page = 1
+        self._zoom_factor = 1.0
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
@@ -117,6 +124,7 @@ class MainWindow(QMainWindow):
         self._process_worker: _ProcessWorker | None = None
 
         self._build_ui()
+        self._reset_pdf_state()
         self._load_evaluaciones()
 
     # ------------------------------------------------------------------ UI
@@ -184,12 +192,37 @@ class MainWindow(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
+        pdf_controls = QHBoxLayout()
+        self.btn_prev_page = QPushButton("◀ Anterior")
+        self.btn_next_page = QPushButton("Siguiente ▶")
+        self.page_selector = QSpinBox()
+        self.page_selector.setRange(1, 1)
+        self.page_selector.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus)
+        self.page_selector.setMinimumWidth(90)
+        self.lbl_page_info = QLabel("Página 0 / 0")
+        self.btn_zoom_out = QPushButton("−")
+        self.btn_zoom_out.setMinimumWidth(36)
+        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_in.setMinimumWidth(36)
+        self.btn_reset_zoom = QPushButton("Restablecer zoom")
+        self.lbl_zoom_info = QLabel("100 %")
+        pdf_controls.addWidget(self.btn_prev_page)
+        pdf_controls.addWidget(self.btn_next_page)
+        pdf_controls.addWidget(self.page_selector)
+        pdf_controls.addWidget(self.lbl_page_info)
+        pdf_controls.addStretch(1)
+        pdf_controls.addWidget(self.btn_zoom_out)
+        pdf_controls.addWidget(self.btn_zoom_in)
+        pdf_controls.addWidget(self.btn_reset_zoom)
+        pdf_controls.addWidget(self.lbl_zoom_info)
+
         self.image_label = QLabel("Seleccione un alumno")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumHeight(350)
         image_scroll = QScrollArea()
         image_scroll.setWidget(self.image_label)
         image_scroll.setWidgetResizable(True)
+        right_layout.addLayout(pdf_controls)
         right_layout.addWidget(image_scroll, stretch=3)
 
         self.table_answers = QTableWidget(0, 3)
@@ -289,6 +322,12 @@ class MainWindow(QMainWindow):
         )
         self.combo_secciones.currentIndexChanged.connect(self._on_seccion_changed)
         self.table_not_found.itemChanged.connect(self._on_not_found_item_changed)
+        self.btn_prev_page.clicked.connect(self._on_prev_page)
+        self.btn_next_page.clicked.connect(self._on_next_page)
+        self.btn_zoom_in.clicked.connect(self._on_zoom_in)
+        self.btn_zoom_out.clicked.connect(self._on_zoom_out)
+        self.btn_reset_zoom.clicked.connect(self._on_reset_zoom)
+        self.page_selector.valueChanged.connect(self._on_page_selected)
 
     # --------------------------------------------------------------- acciones
     def _on_load_pdf(self) -> None:
@@ -301,8 +340,13 @@ class MainWindow(QMainWindow):
         except Exception as exc:  # pragma: no cover - errores de UI
             QMessageBox.critical(self, "Error PDF", f"No se pudo abrir el PDF: {exc}")
             self._pdf_doc = None
+            self._toggle_pdf_controls(False)
+            self._reset_pdf_state()
+            return
         self.lbl_file.setText(self.pdf_path.name)
         self.statusBar().showMessage(f"Archivo cargado: {self.pdf_path}", 5000)
+        self._reset_pdf_state()
+        self._initialize_pdf_navigation()
 
     def _on_process(self) -> None:
         if not self.pdf_path:
@@ -348,6 +392,46 @@ class MainWindow(QMainWindow):
             self.combo_secciones,
         ):
             widget.setEnabled(enabled)
+
+    def _toggle_pdf_controls(self, enabled: bool) -> None:
+        for widget in (
+            self.btn_prev_page,
+            self.btn_next_page,
+            self.page_selector,
+            self.btn_zoom_in,
+            self.btn_zoom_out,
+            self.btn_reset_zoom,
+        ):
+            widget.setEnabled(enabled)
+
+    def _reset_pdf_state(self) -> None:
+        self._current_page = 1
+        self._zoom_factor = 1.0
+        self.lbl_zoom_info.setText("100 %")
+        self.lbl_page_info.setText("Página 0 / 0")
+        self.page_selector.blockSignals(True)
+        self.page_selector.setRange(1, 1)
+        self.page_selector.setValue(1)
+        self.page_selector.blockSignals(False)
+        self._toggle_pdf_controls(self._pdf_doc is not None)
+
+    def _initialize_pdf_navigation(self) -> None:
+        if not self._pdf_doc:
+            self._mostrar_imagen(None)
+            return
+        total_pages = self._pdf_doc.page_count
+        if total_pages <= 0:
+            self._mostrar_imagen(None)
+            self._toggle_pdf_controls(False)
+            return
+        self.page_selector.blockSignals(True)
+        self.page_selector.setRange(1, total_pages)
+        self.page_selector.setValue(1)
+        self.page_selector.blockSignals(False)
+        self._toggle_pdf_controls(True)
+        self._update_page_label(1, total_pages)
+        self._update_zoom_label()
+        self._mostrar_pagina_pdf(1)
 
     def _on_process_completed(self, resultados: List[AlumnoHoja]) -> None:
         self.resultados = resultados
@@ -1040,6 +1124,7 @@ class MainWindow(QMainWindow):
         if not self._pdf_doc:
             self.image_label.clear()
             self.image_label.setText("PDF no cargado")
+            self._toggle_pdf_controls(False)
             return
 
         if pagina < 1 or pagina > self._pdf_doc.page_count:
@@ -1047,9 +1132,18 @@ class MainWindow(QMainWindow):
             self.image_label.setText(f"Página {pagina} fuera de rango")
             return
 
+        self._current_page = pagina
+        self.page_selector.blockSignals(True)
+        self.page_selector.setValue(pagina)
+        self.page_selector.blockSignals(False)
+        self._toggle_pdf_controls(True)
+
+        self._update_page_label(pagina, self._pdf_doc.page_count)
+        self._update_zoom_label()
+
         page = self._pdf_doc[pagina - 1]
 
-        zoom = self.PREVIEW_DPI / 72
+        zoom = (self.PREVIEW_DPI / 72) * self._zoom_factor
         mat = fitz.Matrix(zoom, zoom)
         pix = page.get_pixmap(matrix=mat)
 
@@ -1061,18 +1155,10 @@ class MainWindow(QMainWindow):
         qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
         pixmap = QPixmap.fromImage(qimg)
 
-        target_size = self.image_label.size()
-        if target_size.isEmpty():
-            self.image_label.setPixmap(pixmap)
-            return
-
-        self.image_label.setPixmap(
-            pixmap.scaled(
-                target_size,
-                Qt.AspectRatioMode.KeepAspectRatio,
-                Qt.TransformationMode.SmoothTransformation,
-            )
-        )
+        self.image_label.setPixmap(pixmap)
+        self.image_label.setFixedSize(pixmap.size())
+        self.image_label.adjustSize()
+        self.image_label.update()
 
     def _mostrar_imagen(self, path: Path | None) -> None:
         if not path or not path.exists():
@@ -1095,10 +1181,71 @@ class MainWindow(QMainWindow):
             )
         )
 
+    def _update_page_label(self, current: int, total: int) -> None:
+        self.lbl_page_info.setText(f"Página {current} / {total}")
+
+    def _update_zoom_label(self) -> None:
+        self.lbl_zoom_info.setText(f"{int(self._zoom_factor * 100)} %")
+
+    def _adjust_zoom(self, delta: float) -> None:
+        new_zoom = min(self.MAX_ZOOM, max(self.MIN_ZOOM, self._zoom_factor + delta))
+        if abs(new_zoom - self._zoom_factor) < 1e-3:
+            return
+        self._zoom_factor = new_zoom
+        self._update_zoom_label()
+        self._render_current_page()
+
+    def _render_current_page(self) -> None:
+        if not self._pdf_doc:
+            return
+        self._mostrar_pagina_pdf(self._current_page)
+
+    def _on_prev_page(self) -> None:
+        if not self._pdf_doc:
+            return
+        target = max(1, self._current_page - 1)
+        if target == self._current_page:
+            return
+        self._mostrar_pagina_pdf(target)
+
+    def _on_next_page(self) -> None:
+        if not self._pdf_doc:
+            return
+        target = min(self._pdf_doc.page_count, self._current_page + 1)
+        if target == self._current_page:
+            return
+        self._mostrar_pagina_pdf(target)
+
+    def _on_page_selected(self, value: int) -> None:
+        if not self._pdf_doc:
+            return
+        if value < 1 or value > self._pdf_doc.page_count:
+            return
+        if value == self._current_page:
+            return
+        self._mostrar_pagina_pdf(value)
+
+    def _on_zoom_in(self) -> None:
+        self._adjust_zoom(self.ZOOM_STEP)
+
+    def _on_zoom_out(self) -> None:
+        self._adjust_zoom(-self.ZOOM_STEP)
+
+    def _on_reset_zoom(self) -> None:
+        if abs(self._zoom_factor - 1.0) < 1e-3:
+            return
+        self._zoom_factor = 1.0
+        self._update_zoom_label()
+        self._render_current_page()
+
     def resizeEvent(self, event) -> None:  # pragma: no cover - actualización visual
         super().resizeEvent(event)
         pixmap = self.image_label.pixmap()
         if not pixmap or pixmap.isNull():
+            return
+        if self._pdf_doc:
+            # Mantener el zoom actual de la vista previa sin forzar escalado.
+            self.image_label.setFixedSize(pixmap.size())
             return
         target_size = self.image_label.size()
         if target_size.isEmpty():
