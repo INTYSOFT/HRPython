@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 
 import fitz  # PyMuPDF
 import pandas as pd
-from PyQt6.QtCore import QEvent, QSize, Qt, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QPixmap, QColor, QImage, QWheelEvent
+from PyQt6.QtCore import QEvent, QPoint, QSize, Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtGui import QPixmap, QColor, QImage, QWheelEvent, QMouseEvent, QFont
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QFileDialog,
@@ -37,10 +37,6 @@ from PyQt6.QtWidgets import (
 
 from models import AlumnoHoja, Respuesta
 from omr_processor import OMRConfig, procesar_pdf
-
-from PyQt6.QtGui import QFont
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QToolButton
 
 
 class _ProcessWorker(QObject):
@@ -103,6 +99,8 @@ class MainWindow(QMainWindow):
         self._current_page = 1
         self._zoom_factor = 1.0
         self._syncing_selection = False
+        self._is_panning = False
+        self._pan_start: QPoint | None = None
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
@@ -201,13 +199,19 @@ class MainWindow(QMainWindow):
         self.table_not_found.setSelectionMode(
             QTableWidget.SelectionMode.SingleSelection
         )
-        left_layout.addWidget(self.table_not_found, stretch=2)
 
         self.table_answers = QTableWidget(0, 3)
         self.table_answers.setHorizontalHeaderLabels(["Pregunta", "Respuesta", "Estado"])
         self.table_answers.verticalHeader().setVisible(False)
         self.table_answers.setAlternatingRowColors(True)
-        left_layout.addWidget(self.table_answers, stretch=3)
+
+        lower_tables = QHBoxLayout()
+        lower_tables.setContentsMargins(0, 0, 0, 0)
+        lower_tables.setSpacing(8)
+        lower_tables.addWidget(self.table_not_found, stretch=1)
+        lower_tables.addWidget(self.table_answers, stretch=2)
+
+        left_layout.addLayout(lower_tables, stretch=4)
 
         splitter.addWidget(left_panel)
 
@@ -286,11 +290,13 @@ class MainWindow(QMainWindow):
         self.image_label = QLabel("Seleccione un alumno")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumHeight(350)
+        self.image_label.setMouseTracking(True)
         image_scroll = QScrollArea()
         image_scroll.setWidget(self.image_label)
         image_scroll.setWidgetResizable(True)
         self.image_scroll = image_scroll
         self.image_scroll.viewport().installEventFilter(self)
+        self.image_label.installEventFilter(self)
 
         nav_panel = QWidget()        
         nav_panel.setObjectName("navPanel")
@@ -413,45 +419,45 @@ class MainWindow(QMainWindow):
 
             /* Panel lateral de navegación */
             QWidget#navPanel {
-                background-color: #202124;
-                border-radius: 10px;           /* más fino */
+                background-color: #e3f2fd;
+                border-radius: 12px;
             }
             QToolButton#navToolButton,
             QToolButton#zoomToolButton,
             QToolButton#resetZoomToolButton {
                 background-color: transparent;
                 border: none;
-                color: #e5e7eb;
-                padding: 4px;                  /* antes 6px */
+                color: #1f2937;
+                padding: 4px;
             }
             QToolButton#navToolButton:hover,
             QToolButton#zoomToolButton:hover,
             QToolButton#resetZoomToolButton:hover {
-                background-color: rgba(255, 255, 255, 0.05);
+                background-color: rgba(31, 41, 55, 0.08);
                 border-radius: 8px;
             }
 
             QLabel#pageBadge {
-                background-color: #111827;
-                color: #f9fafb;
+                background-color: #a5b4fc;
+                color: #0f172a;
                 border-radius: 6px;
-                padding: 3px 6px;              /* antes 6px 10px */
+                padding: 3px 6px;
                 min-width: 26px;
                 qproperty-alignment: AlignCenter;
                 font-weight: 600;
                 font-size: 8pt;
             }
             QLabel#pageTotal {
-                color: #d1d5db;
+                color: #1f2937;
                 qproperty-alignment: AlignCenter;
                 font-size: 8pt;
             }
 
             QSpinBox#pageSelector {
-                background-color: #111827;
-                border: 1px solid #1f2937;
+                background-color: #e3f2fd;
+                border: 1px solid #c7d2fe;
                 border-radius: 6px;
-                color: #e5e7eb;
+                color: #111827;
                 padding: 3px 6px;
                 min-height: 22px;
                 font-size: 8pt;
@@ -485,7 +491,42 @@ class MainWindow(QMainWindow):
     def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # pragma: no cover - interacción UI
         if obj is self.image_scroll.viewport() and event.type() == QEvent.Type.Wheel:
             return self._handle_wheel_zoom(event) or super().eventFilter(obj, event)
+
+        if obj is self.image_label and isinstance(event, QMouseEvent):
+            if event.type() == QEvent.Type.MouseButtonPress:
+                if (
+                    event.button() == Qt.MouseButton.LeftButton
+                    and self._can_pan_view()
+                ):
+                    self._is_panning = True
+                    self._pan_start = event.position().toPoint()
+                    self.image_label.setCursor(Qt.CursorShape.ClosedHandCursor)
+                    return True
+            elif event.type() == QEvent.Type.MouseMove and self._is_panning:
+                if self._pan_start is None:
+                    self._pan_start = event.position().toPoint()
+                    return True
+                delta = event.position().toPoint() - self._pan_start
+                h_bar = self.image_scroll.horizontalScrollBar()
+                v_bar = self.image_scroll.verticalScrollBar()
+                h_bar.setValue(h_bar.value() - delta.x())
+                v_bar.setValue(v_bar.value() - delta.y())
+                self._pan_start = event.position().toPoint()
+                return True
+            elif event.type() == QEvent.Type.MouseButtonRelease:
+                if self._is_panning and event.button() == Qt.MouseButton.LeftButton:
+                    self._is_panning = False
+                    self._pan_start = None
+                    self.image_label.unsetCursor()
+                    return True
         return super().eventFilter(obj, event)
+
+    def _can_pan_view(self) -> bool:
+        """Indica si hay espacio de desplazamiento disponible para arrastrar."""
+
+        h_bar = self.image_scroll.horizontalScrollBar()
+        v_bar = self.image_scroll.verticalScrollBar()
+        return (h_bar.maximum() > 0) or (v_bar.maximum() > 0)
 
     # --------------------------------------------------------------- acciones
     def _on_load_pdf(self) -> None:
