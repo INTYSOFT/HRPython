@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import pandas as pd
-from PyQt6.QtCore import Qt
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QPixmap
 from PyQt6.QtWidgets import (
     QFileDialog,
@@ -27,10 +27,36 @@ from PyQt6.QtWidgets import (
     QVBoxLayout,
     QWidget,
     QHBoxLayout,
+    QProgressBar,
 )
 
 from models import AlumnoHoja, Respuesta
 from omr_processor import OMRConfig, procesar_pdf
+
+
+class _ProcessWorker(QObject):
+    finished = pyqtSignal(list)
+    error = pyqtSignal(str)
+    progress = pyqtSignal(int)
+
+    def __init__(self, pdf_path: Path, cache_dir: Path, config: OMRConfig) -> None:
+        super().__init__()
+        self.pdf_path = pdf_path
+        self.cache_dir = cache_dir
+        self.config = config
+
+    def run(self) -> None:
+        try:
+            resultados = procesar_pdf(
+                self.pdf_path,
+                self.cache_dir,
+                self.config,
+                progress_callback=self.progress.emit,
+            )
+        except Exception as exc:  # pragma: no cover - mostrado en UI
+            self.error.emit(str(exc))
+            return
+        self.finished.emit(resultados)
 
 
 class MainWindow(QMainWindow):
@@ -52,6 +78,33 @@ class MainWindow(QMainWindow):
         self.config = OMRConfig()
         self.evaluaciones: List[dict] = []
         self.evaluacion_detalle: List[dict] = []
+        self._default_status_style = self.statusBar().styleSheet()
+
+        self._progress_bar = QProgressBar()
+        self._progress_bar.setRange(0, 100)
+        self._progress_bar.setValue(0)
+        self._progress_bar.setTextVisible(True)
+        self._progress_bar.setFormat("Progreso %p%")
+        self._progress_bar.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self._progress_bar.setVisible(False)
+        self._progress_bar.setStyleSheet(
+            """
+            QProgressBar {
+                background-color: #fee2e2;
+                color: #991b1b;
+                border: 1px solid #fecdd3;
+                border-radius: 10px;
+                padding: 4px;
+            }
+            QProgressBar::chunk {
+                background-color: #f87171;
+                border-radius: 8px;
+            }
+            """
+        )
+        self.statusBar().addPermanentWidget(self._progress_bar, 1)
+        self._process_thread: QThread | None = None
+        self._process_worker: _ProcessWorker | None = None
 
         self._build_ui()
         self._load_evaluaciones()
@@ -237,15 +290,73 @@ class MainWindow(QMainWindow):
         if not self.pdf_path:
             QMessageBox.warning(self, "Sin archivo", "Primero seleccione un PDF.")
             return
+        self._iniciar_procesamiento_async()
+
+    def _iniciar_procesamiento_async(self) -> None:
+        self._preparar_estado_procesamiento()
+
+        self._process_thread = QThread(self)
+        self._process_worker = _ProcessWorker(
+            self.pdf_path, self.cache_dir, self.config
+        )
+        self._process_worker.moveToThread(self._process_thread)
+
+        self._process_thread.started.connect(self._process_worker.run)
+        self._process_worker.finished.connect(self._process_thread.quit)
+        self._process_worker.error.connect(self._process_thread.quit)
+        self._process_worker.progress.connect(self._update_progress)
+        self._process_worker.finished.connect(self._on_process_completed)
+        self._process_worker.error.connect(self._on_process_failed)
+        self._process_thread.finished.connect(self._limpiar_hilo_proceso)
+
+        self._process_thread.start()
+
+    def _preparar_estado_procesamiento(self) -> None:
+        self._progress_bar.setValue(0)
+        self._progress_bar.setVisible(True)
+        self.statusBar().setStyleSheet(
+            "background-color: #fee2e2; color: #991b1b; font-weight: 600;"
+        )
         self.statusBar().showMessage("Procesando...", 0)
-        try:
-            self.resultados = procesar_pdf(self.pdf_path, self.cache_dir, self.config)
-        except Exception as exc:  # pragma: no cover - mostrado al usuario
-            QMessageBox.critical(self, "Error procesando", str(exc))
-            self.statusBar().clearMessage()
-            return
+        self._toggle_controls(False)
+
+    def _toggle_controls(self, enabled: bool) -> None:
+        for widget in (
+            self.btn_load,
+            self.btn_process,
+            self.btn_export,
+            self.combo_evaluaciones,
+            self.combo_secciones,
+        ):
+            widget.setEnabled(enabled)
+
+    def _on_process_completed(self, resultados: List[AlumnoHoja]) -> None:
+        self.resultados = resultados
         self._integrar_resultados_en_tablas()
+        self._progress_bar.setValue(100)
         self.statusBar().showMessage("Procesamiento finalizado", 5000)
+        self._finalizar_estado_procesamiento()
+
+    def _on_process_failed(self, message: str) -> None:
+        QMessageBox.critical(self, "Error procesando", message)
+        self.statusBar().clearMessage()
+        self._finalizar_estado_procesamiento()
+
+    def _update_progress(self, value: int) -> None:
+        self._progress_bar.setValue(max(0, min(100, value)))
+
+    def _finalizar_estado_procesamiento(self) -> None:
+        self._toggle_controls(True)
+        self.statusBar().setStyleSheet(self._default_status_style)
+        self._progress_bar.setVisible(False)
+
+    def _limpiar_hilo_proceso(self) -> None:
+        if self._process_worker:
+            self._process_worker.deleteLater()
+            self._process_worker = None
+        if self._process_thread:
+            self._process_thread.deleteLater()
+            self._process_thread = None
 
     def _on_export(self) -> None:
         if not self.resultados:
