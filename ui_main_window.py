@@ -178,6 +178,8 @@ class MainWindow(QMainWindow):
         # Panel izquierdo (alumnos y no encontrados)
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
+        left_layout.setContentsMargins(0, 0, 0, 0)
+        left_layout.setSpacing(8)
 
         self.table_students = QTableWidget(0, 5)
         self.table_students.setHorizontalHeaderLabels(
@@ -199,11 +201,17 @@ class MainWindow(QMainWindow):
         self.table_not_found.setSelectionMode(
             QTableWidget.SelectionMode.SingleSelection
         )
-        left_layout.addWidget(self.table_not_found, stretch=1)
+        left_layout.addWidget(self.table_not_found, stretch=2)
+
+        self.table_answers = QTableWidget(0, 3)
+        self.table_answers.setHorizontalHeaderLabels(["Pregunta", "Respuesta", "Estado"])
+        self.table_answers.verticalHeader().setVisible(False)
+        self.table_answers.setAlternatingRowColors(True)
+        left_layout.addWidget(self.table_answers, stretch=3)
 
         splitter.addWidget(left_panel)
 
-        # Panel derecho (imagen + respuestas)
+        # Panel derecho (solo visor PDF)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(0, 0, 0, 0)
@@ -321,12 +329,6 @@ class MainWindow(QMainWindow):
 
         right_layout.addLayout(viewer_layout, stretch=3)
         right_layout.addLayout(info_bar)
-
-        self.table_answers = QTableWidget(0, 3)
-        self.table_answers.setHorizontalHeaderLabels(["Pregunta", "Respuesta", "Estado"])
-        self.table_answers.verticalHeader().setVisible(False)
-        self.table_answers.setAlternatingRowColors(True)
-        right_layout.addWidget(self.table_answers, stretch=2)
 
         splitter.addWidget(right_panel)
         layout.addWidget(splitter)
