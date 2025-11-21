@@ -320,7 +320,7 @@ class MainWindow(QMainWindow):
         self.statusBar().setStyleSheet(
             "background-color: #fee2e2; color: #991b1b; font-weight: 600;"
         )
-        self.statusBar().showMessage("Procesando...", 0)
+        self.statusBar().showMessage("Procesando... 0%", 0)
         self._toggle_controls(False)
 
     def _toggle_controls(self, enabled: bool) -> None:
@@ -347,7 +347,11 @@ class MainWindow(QMainWindow):
         self._finalizar_estado_procesamiento()
 
     def _update_progress(self, value: int) -> None:
-        self._progress_bar.setValue(max(0, min(100, value)))
+        clamped_value = max(0, min(100, value))
+        self._progress_bar.setValue(clamped_value)
+        if not self._progress_bar.isVisible():
+            self._progress_bar.setVisible(True)
+        self.statusBar().showMessage(f"Procesando... {clamped_value}%", 0)
 
     def _finalizar_estado_procesamiento(self) -> None:
         self._toggle_controls(True)
