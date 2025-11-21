@@ -10,9 +10,10 @@ from typing import Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+import fitz  # PyMuPDF
 import pandas as pd
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QPixmap, QColor
+from PyQt6.QtGui import QPixmap, QColor, QImage
 from PyQt6.QtWidgets import (
     QFileDialog,
     QComboBox,
@@ -71,6 +72,7 @@ class MainWindow(QMainWindow):
 
     API_BASE = "http://192.168.1.50:5000"
     ALL_SECTIONS_KEY = "__all__"
+    PREVIEW_DPI = 300
 
     def __init__(self) -> None:
         super().__init__()
@@ -86,6 +88,7 @@ class MainWindow(QMainWindow):
         self.evaluaciones: List[dict] = []
         self.evaluacion_detalle: List[dict] = []
         self._default_status_style = self.statusBar().styleSheet()
+        self._pdf_doc: fitz.Document | None = None
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
@@ -293,6 +296,11 @@ class MainWindow(QMainWindow):
         if not file_name:
             return
         self.pdf_path = Path(file_name)
+        try:
+            self._pdf_doc = fitz.open(str(self.pdf_path))
+        except Exception as exc:  # pragma: no cover - errores de UI
+            QMessageBox.critical(self, "Error PDF", f"No se pudo abrir el PDF: {exc}")
+            self._pdf_doc = None
         self.lbl_file.setText(self.pdf_path.name)
         self.statusBar().showMessage(f"Archivo cargado: {self.pdf_path}", 5000)
 
@@ -1019,8 +1027,52 @@ class MainWindow(QMainWindow):
             self._mostrar_imagen(None)
             self._llenar_tabla_respuestas([])
             return
-        self._mostrar_imagen(alumno.imagen_path)
+        try:
+            pagina = int(alumno.pagina)
+        except (ValueError, TypeError):
+            pagina = 1
+
+        self._mostrar_pagina_pdf(pagina)
         self._llenar_tabla_respuestas(alumno.respuestas)
+
+    def _mostrar_pagina_pdf(self, pagina: int) -> None:
+        """Renderiza la página del PDF original y la muestra en image_label."""
+        if not self._pdf_doc:
+            self.image_label.clear()
+            self.image_label.setText("PDF no cargado")
+            return
+
+        if pagina < 1 or pagina > self._pdf_doc.page_count:
+            self.image_label.clear()
+            self.image_label.setText(f"Página {pagina} fuera de rango")
+            return
+
+        page = self._pdf_doc[pagina - 1]
+
+        zoom = self.PREVIEW_DPI / 72
+        mat = fitz.Matrix(zoom, zoom)
+        pix = page.get_pixmap(matrix=mat)
+
+        if pix.alpha:
+            fmt = QImage.Format.Format_RGBA8888
+        else:
+            fmt = QImage.Format.Format_RGB888
+
+        qimg = QImage(pix.samples, pix.width, pix.height, pix.stride, fmt).copy()
+        pixmap = QPixmap.fromImage(qimg)
+
+        target_size = self.image_label.size()
+        if target_size.isEmpty():
+            self.image_label.setPixmap(pixmap)
+            return
+
+        self.image_label.setPixmap(
+            pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
     def _mostrar_imagen(self, path: Path | None) -> None:
         if not path or not path.exists():
