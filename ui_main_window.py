@@ -136,13 +136,31 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         layout = QVBoxLayout(central)
-        layout.setContentsMargins(8, 8, 8, 8)
-        layout.setSpacing(6)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # Encabezado
+        header = QHBoxLayout()
+        header.setContentsMargins(4, 0, 4, 0)
+        header.setSpacing(10)
+
+        self.logo_badge = QLabel("OMR")
+        self.logo_badge.setObjectName("logoBadge")
+        self.logo_badge.setAlignment(Qt.AlignmentFlag.AlignCenter)
+
+        self.title_label = QLabel("SCAN HOJA DE RESPUESTAS")
+        self.title_label.setObjectName("titleLabel")
+
+        header.addWidget(self.logo_badge)
+        header.addWidget(self.title_label)
+        header.addStretch(1)
+
+        layout.addLayout(header)
 
         # Barra de acciones
         toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
-        toolbar.setSpacing(6)
+        toolbar.setContentsMargins(0, 4, 0, 4)
+        toolbar.setSpacing(8)
 
         self.combo_evaluaciones = QComboBox()        
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
@@ -352,6 +370,26 @@ class MainWindow(QMainWindow):
                 font-family: 'Segoe UI', 'Open Sans', sans-serif;
                 font-size: 9pt;
                 color: #1f2933;
+            }
+
+            QLabel#titleLabel {
+                font-size: 16pt;
+                font-weight: 700;
+                color: #0f172a;
+                letter-spacing: 0.5px;
+            }
+
+            QLabel#logoBadge {
+                min-width: 44px;
+                min-height: 44px;
+                max-width: 44px;
+                max-height: 44px;
+                border-radius: 22px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #c7d2fe, stop:1 #b8e0d2);
+                color: #0f172a;
+                font-weight: 800;
+                font-size: 12pt;
+                border: 1px solid #dbeafe;
             }
 
             /* Botones principales más compactos */
@@ -1524,23 +1562,62 @@ class MainWindow(QMainWindow):
             student_row = _buscar_en_tabla(self.table_students)
             self.table_students.clearSelection()
             self.table_not_found.clearSelection()
+            resultado: AlumnoHoja | None = None
             if student_row is not None:
                 self.table_students.selectRow(student_row)
                 self.table_students.scrollToItem(
                     self.table_students.item(student_row, 0)
                 )
-                return
-
-            nf_row = _buscar_en_tabla(self.table_not_found)
-            if nf_row is not None:
-                self.table_not_found.selectRow(nf_row)
-                self.table_not_found.scrollToItem(
-                    self.table_not_found.item(nf_row, 0)
-                )
+                resultado = self._resultado_por_fila(self.table_students, student_row)
+            else:
+                nf_row = _buscar_en_tabla(self.table_not_found)
+                if nf_row is not None:
+                    self.table_not_found.selectRow(nf_row)
+                    self.table_not_found.scrollToItem(
+                        self.table_not_found.item(nf_row, 0)
+                    )
+                    resultado = self._resultado_por_fila(
+                        self.table_not_found, nf_row
+                    )
+            self._sincronizar_respuestas_por_pagina(pagina, resultado)
         finally:
             self.table_students.blockSignals(False)
             self.table_not_found.blockSignals(False)
             self._syncing_selection = False
+
+    def _resultado_por_fila(
+        self, tabla: QTableWidget, fila: int
+    ) -> AlumnoHoja | None:
+        if tabla is self.table_students:
+            dni_item = tabla.item(fila, 1)
+            dni = dni_item.text().strip() if dni_item else ""
+            return self.resultados_por_dni.get(dni)
+        if tabla is self.table_not_found:
+            pagina_item = tabla.item(fila, 0)
+            if pagina_item:
+                resultado = pagina_item.data(Qt.ItemDataRole.UserRole)
+                if isinstance(resultado, AlumnoHoja):
+                    return resultado
+        return None
+
+    def _sincronizar_respuestas_por_pagina(
+        self, pagina: int, resultado: AlumnoHoja | None = None
+    ) -> None:
+        objetivo = resultado or self._buscar_resultado_por_pagina(pagina)
+        if objetivo:
+            self._llenar_tabla_respuestas(objetivo.respuestas)
+        else:
+            self._llenar_tabla_respuestas([])
+
+    def _buscar_resultado_por_pagina(self, pagina: int) -> AlumnoHoja | None:
+        for resultado in self.resultados:
+            try:
+                pagina_resultado = int(resultado.pagina)
+            except (TypeError, ValueError):
+                continue
+            if pagina_resultado == pagina:
+                return resultado
+        return None
 
     def _llenar_tabla_respuestas(self, respuestas: List[Respuesta]) -> None:
         self.table_answers.setRowCount(0)
