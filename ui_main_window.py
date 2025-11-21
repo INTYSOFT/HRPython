@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QScrollArea,
     QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -75,7 +76,7 @@ class MainWindow(QMainWindow):
     API_BASE = "http://192.168.1.50:5000"
     ALL_SECTIONS_KEY = "__all__"
     PREVIEW_DPI = 300
-    MIN_ZOOM = 0.5
+    MIN_ZOOM = 0.1
     MAX_ZOOM = 3.0
     ZOOM_STEP = 0.25
 
@@ -96,6 +97,7 @@ class MainWindow(QMainWindow):
         self._pdf_doc: fitz.Document | None = None
         self._current_page = 1
         self._zoom_factor = 1.0
+        self._syncing_selection = False
 
         self._progress_bar = QProgressBar()
         self._progress_bar.setRange(0, 100)
@@ -193,18 +195,47 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
 
         pdf_controls = QHBoxLayout()
-        self.btn_prev_page = QPushButton("◀ Anterior")
-        self.btn_next_page = QPushButton("Siguiente ▶")
+        self.btn_prev_page = QPushButton()
+        self.btn_prev_page.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
+        )
+        self.btn_prev_page.setToolTip("Página anterior")
+        self.btn_prev_page.setObjectName("navButton")
+
+        self.btn_next_page = QPushButton()
+        self.btn_next_page.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
+        )
+        self.btn_next_page.setToolTip("Página siguiente")
+        self.btn_next_page.setObjectName("navButton")
         self.page_selector = QSpinBox()
         self.page_selector.setRange(1, 1)
         self.page_selector.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus)
         self.page_selector.setMinimumWidth(90)
+        self.page_selector.setObjectName("pageSelector")
         self.lbl_page_info = QLabel("Página 0 / 0")
-        self.btn_zoom_out = QPushButton("−")
+        self.btn_zoom_out = QPushButton()
+        self.btn_zoom_out.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+        )
         self.btn_zoom_out.setMinimumWidth(36)
-        self.btn_zoom_in = QPushButton("+")
+        self.btn_zoom_out.setObjectName("zoomButton")
+        self.btn_zoom_out.setToolTip("Disminuir zoom")
+
+        self.btn_zoom_in = QPushButton()
+        self.btn_zoom_in.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+        )
         self.btn_zoom_in.setMinimumWidth(36)
-        self.btn_reset_zoom = QPushButton("Restablecer zoom")
+        self.btn_zoom_in.setObjectName("zoomButton")
+        self.btn_zoom_in.setToolTip("Aumentar zoom")
+
+        self.btn_reset_zoom = QPushButton()
+        self.btn_reset_zoom.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
+        self.btn_reset_zoom.setObjectName("resetZoomButton")
+        self.btn_reset_zoom.setToolTip("Ajustar al visor")
         self.lbl_zoom_info = QLabel("100 %")
         pdf_controls.addWidget(self.btn_prev_page)
         pdf_controls.addWidget(self.btn_next_page)
@@ -222,6 +253,7 @@ class MainWindow(QMainWindow):
         image_scroll = QScrollArea()
         image_scroll.setWidget(self.image_label)
         image_scroll.setWidgetResizable(True)
+        self.image_scroll = image_scroll
         right_layout.addLayout(pdf_controls)
         right_layout.addWidget(image_scroll, stretch=3)
 
@@ -303,6 +335,31 @@ class MainWindow(QMainWindow):
             }
             QSplitter::handle {
                 background-color: #e1e7ef;
+            }
+            QPushButton#navButton, QPushButton#zoomButton, QPushButton#resetZoomButton {
+                background-color: #dce7fa;
+                border: 1px solid #c4d4f5;
+                border-radius: 12px;
+                padding: 10px;
+                min-width: 42px;
+                min-height: 36px;
+            }
+            QPushButton#navButton:hover, QPushButton#zoomButton:hover, QPushButton#resetZoomButton:hover {
+                background-color: #cddcf8;
+            }
+            QPushButton#navButton:pressed, QPushButton#zoomButton:pressed, QPushButton#resetZoomButton:pressed {
+                background-color: #b4c7f2;
+            }
+            QSpinBox#pageSelector {
+                background-color: #ffffff;
+                border: 1px solid #c4d4f5;
+                border-radius: 10px;
+                padding: 6px 10px;
+                min-height: 36px;
+            }
+            QSpinBox#pageSelector:focus {
+                border-color: #9bb7ef;
+                box-shadow: 0 0 0 3px rgba(155, 183, 239, 0.35);
             }
         """
         )
@@ -430,6 +487,7 @@ class MainWindow(QMainWindow):
         self.page_selector.blockSignals(False)
         self._toggle_pdf_controls(True)
         self._update_page_label(1, total_pages)
+        self._zoom_factor = self._calculate_fit_zoom(1)
         self._update_zoom_label()
         self._mostrar_pagina_pdf(1)
 
@@ -482,6 +540,8 @@ class MainWindow(QMainWindow):
         QMessageBox.information(self, "Exportado", f"Archivo guardado en {save_name}")
 
     def _on_student_selected(self) -> None:
+        if self._syncing_selection:
+            return
         selected = self.table_students.selectedIndexes()
         if not selected:
             return
@@ -489,6 +549,8 @@ class MainWindow(QMainWindow):
         self._mostrar_detalle_por_indice(row)
 
     def _on_not_found_selected(self) -> None:
+        if self._syncing_selection:
+            return
         selected = self.table_not_found.selectedIndexes()
         if not selected:
             return
@@ -1159,6 +1221,7 @@ class MainWindow(QMainWindow):
         self.image_label.setFixedSize(pixmap.size())
         self.image_label.adjustSize()
         self.image_label.update()
+        self._resaltar_pagina_en_tablas(pagina)
 
     def _mostrar_imagen(self, path: Path | None) -> None:
         if not path or not path.exists():
@@ -1194,6 +1257,24 @@ class MainWindow(QMainWindow):
         self._zoom_factor = new_zoom
         self._update_zoom_label()
         self._render_current_page()
+
+    def _calculate_fit_zoom(self, pagina: int | None = None) -> float:
+        if not self._pdf_doc:
+            return 1.0
+        if pagina is None:
+            pagina = self._current_page
+        pagina = max(1, min(self._pdf_doc.page_count, pagina))
+        viewport = self.image_scroll.viewport()
+        available_width = max(1, viewport.width() - 24)
+        available_height = max(1, viewport.height() - 24)
+        page = self._pdf_doc[pagina - 1]
+        base_scale = self.PREVIEW_DPI / 72
+        base_width = page.rect.width * base_scale
+        base_height = page.rect.height * base_scale
+        width_ratio = available_width / base_width if base_width else 1.0
+        height_ratio = available_height / base_height if base_height else 1.0
+        fit_zoom = max(self.MIN_ZOOM, min(width_ratio, height_ratio))
+        return min(self.MAX_ZOOM, fit_zoom)
 
     def _render_current_page(self) -> None:
         if not self._pdf_doc:
@@ -1232,9 +1313,10 @@ class MainWindow(QMainWindow):
         self._adjust_zoom(-self.ZOOM_STEP)
 
     def _on_reset_zoom(self) -> None:
-        if abs(self._zoom_factor - 1.0) < 1e-3:
+        target_zoom = self._calculate_fit_zoom()
+        if abs(self._zoom_factor - target_zoom) < 1e-3:
             return
-        self._zoom_factor = 1.0
+        self._zoom_factor = target_zoom
         self._update_zoom_label()
         self._render_current_page()
 
@@ -1257,6 +1339,48 @@ class MainWindow(QMainWindow):
                 Qt.TransformationMode.SmoothTransformation,
             )
         )
+
+    def _resaltar_pagina_en_tablas(self, pagina: int) -> None:
+        if self._syncing_selection:
+            return
+
+        def _buscar_en_tabla(tabla: QTableWidget) -> int | None:
+            for row in range(tabla.rowCount()):
+                item = tabla.item(row, 0)
+                if not item:
+                    continue
+                try:
+                    item_page = int(item.text())
+                except ValueError:
+                    continue
+                if item_page == pagina:
+                    return row
+            return None
+
+        self._syncing_selection = True
+        try:
+            self.table_students.blockSignals(True)
+            self.table_not_found.blockSignals(True)
+            student_row = _buscar_en_tabla(self.table_students)
+            self.table_students.clearSelection()
+            self.table_not_found.clearSelection()
+            if student_row is not None:
+                self.table_students.selectRow(student_row)
+                self.table_students.scrollToItem(
+                    self.table_students.item(student_row, 0)
+                )
+                return
+
+            nf_row = _buscar_en_tabla(self.table_not_found)
+            if nf_row is not None:
+                self.table_not_found.selectRow(nf_row)
+                self.table_not_found.scrollToItem(
+                    self.table_not_found.item(nf_row, 0)
+                )
+        finally:
+            self.table_students.blockSignals(False)
+            self.table_not_found.blockSignals(False)
+            self._syncing_selection = False
 
     def _llenar_tabla_respuestas(self, respuestas: List[Respuesta]) -> None:
         self.table_answers.setRowCount(0)
