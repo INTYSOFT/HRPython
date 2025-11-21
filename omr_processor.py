@@ -19,7 +19,7 @@ Reglas de negocio importantes:
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence
+from typing import Callable, List, Sequence
 
 import cv2  # type: ignore
 import fitz  # PyMuPDF
@@ -763,6 +763,7 @@ def procesar_pdf(
     pdf_path: str | Path,
     cache_dir: str | Path | None = None,
     config: OMRConfig | None = None,
+    progress_callback: Callable[[int], None] | None = None,
 ) -> List[AlumnoHoja]:
     """Procesa todas las páginas de un PDF y devuelve una lista de AlumnoHoja."""
 
@@ -776,12 +777,19 @@ def procesar_pdf(
     doc = fitz.open(pdf_path)
     resultados: List[AlumnoHoja] = []
 
+    total_pages = max(len(doc), 1)
     for index, page in enumerate(doc, start=1):
         # inicializamos log de la página
         debug_file = _get_debug_txt_file(index)
         if debug_file is not None:
             with debug_file.open("w", encoding="utf-8") as f:
                 f.write(f"=== Página {index} ===\n")
+
+        if progress_callback is not None:
+            try:
+                progress_callback(int(((index - 1) / total_pages) * 100))
+            except Exception:
+                pass
 
         image_bgr, img_path = _render_page(page, cache_dir, index, config.dpi)
         anchors = _detectar_rectangulos_sync(image_bgr, config)
@@ -846,6 +854,12 @@ def procesar_pdf(
                 imagen_path=img_path,
             )
         )
+
+    if progress_callback is not None:
+        try:
+            progress_callback(100)
+        except Exception:
+            pass
 
     return resultados
 
