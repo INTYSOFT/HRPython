@@ -195,11 +195,13 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
 
         pdf_controls = QHBoxLayout()
+        icon_size_small = QSize(12, 12)
+
         self.btn_prev_page = QPushButton()
         self.btn_prev_page.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
         )
-        self.btn_prev_page.setIconSize(QSize(16, 16))
+        self.btn_prev_page.setIconSize(icon_size_small)
         self.btn_prev_page.setToolTip("Página anterior")
         self.btn_prev_page.setObjectName("navButton")
 
@@ -207,7 +209,7 @@ class MainWindow(QMainWindow):
         self.btn_next_page.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
         )
-        self.btn_next_page.setIconSize(QSize(16, 16))
+        self.btn_next_page.setIconSize(icon_size_small)
         self.btn_next_page.setToolTip("Página siguiente")
         self.btn_next_page.setObjectName("navButton")
         self.page_selector = QSpinBox()
@@ -220,7 +222,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_out.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
         )
-        self.btn_zoom_out.setIconSize(QSize(16, 16))
+        self.btn_zoom_out.setIconSize(icon_size_small)
         self.btn_zoom_out.setMinimumWidth(36)
         self.btn_zoom_out.setObjectName("zoomButton")
         self.btn_zoom_out.setToolTip("Disminuir zoom")
@@ -229,7 +231,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_in.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
         )
-        self.btn_zoom_in.setIconSize(QSize(16, 16))
+        self.btn_zoom_in.setIconSize(icon_size_small)
         self.btn_zoom_in.setMinimumWidth(36)
         self.btn_zoom_in.setObjectName("zoomButton")
         self.btn_zoom_in.setToolTip("Aumentar zoom")
@@ -238,7 +240,7 @@ class MainWindow(QMainWindow):
         self.btn_reset_zoom.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
-        self.btn_reset_zoom.setIconSize(QSize(16, 16))
+        self.btn_reset_zoom.setIconSize(icon_size_small)
         self.btn_reset_zoom.setObjectName("resetZoomButton")
         self.btn_reset_zoom.setToolTip("Ajustar al visor")
         self.lbl_zoom_info = QLabel("100 %")
