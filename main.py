@@ -11,6 +11,16 @@ from ui_main_window import MainWindow
 
 def main() -> None:
     app = QApplication(sys.argv)
+
+    # Estilo base moderno
+    app.setStyle("Fusion")
+
+    # Fuente global un poco más pequeña
+    font = app.font()
+    font.setFamily("Segoe UI")          # o "Roboto", "Open Sans", etc. si los tienes
+    font.setPointSize(9)               # antes suele ser 10–11
+    app.setFont(font)
+
     window = MainWindow()
     window.show()
     sys.exit(app.exec())

@@ -38,6 +38,10 @@ from PyQt6.QtWidgets import (
 from models import AlumnoHoja, Respuesta
 from omr_processor import OMRConfig, procesar_pdf
 
+from PyQt6.QtGui import QFont
+from PyQt6.QtCore import Qt
+from PyQt6.QtWidgets import QToolButton
+
 
 class _ProcessWorker(QObject):
     finished = pyqtSignal(list)
@@ -79,7 +83,7 @@ class MainWindow(QMainWindow):
     PREVIEW_DPI = 300
     MIN_ZOOM = 0.1
     MAX_ZOOM = 3.0
-    ZOOM_STEP = 0.25
+    ZOOM_STEP = 0.05
 
     def __init__(self) -> None:
         super().__init__()
@@ -134,15 +138,22 @@ class MainWindow(QMainWindow):
     def _build_ui(self) -> None:
         central = QWidget()
         layout = QVBoxLayout(central)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(6)
 
         # Barra de acciones
         toolbar = QHBoxLayout()
-        self.combo_evaluaciones = QComboBox()
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(6)
+
+        self.combo_evaluaciones = QComboBox()        
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
-        self.combo_evaluaciones.setMinimumWidth(280)
+        self.combo_evaluaciones.setMinimumWidth(120)
+        
         self.combo_secciones = QComboBox()
         self.combo_secciones.setPlaceholderText("Seleccione sección")
-        self.combo_secciones.setMinimumWidth(200)
+        self.combo_secciones.setMinimumWidth(120)
+
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
         self.btn_export = QPushButton("Exportar resultados")
@@ -162,6 +173,7 @@ class MainWindow(QMainWindow):
 
         splitter = QSplitter()
         splitter.setOrientation(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(4)  # más fino
 
         # Panel izquierdo (alumnos y no encontrados)
         left_panel = QWidget()
@@ -194,8 +206,34 @@ class MainWindow(QMainWindow):
         # Panel derecho (imagen + respuestas)
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
+        right_layout.setContentsMargins(0, 0, 0, 0)
+        right_layout.setSpacing(6)
 
-        icon_size_small = QSize(20, 20)
+        icon_size_small = QSize(10, 10)
+        # --- ZOOM OUT (-) ---
+        self.btn_zoom_out = QToolButton()
+        self.btn_zoom_out.setText("−")  # puedes usar "-" si prefieres
+        self.btn_zoom_out.setToolTip("Disminuir zoom")
+        self.btn_zoom_out.setObjectName("zoomToolButton")
+        self.btn_zoom_out.setAutoRaise(True)
+        self.btn_zoom_out.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+
+        # opcional: hacer el texto un poquito más “gordito”
+        font = self.btn_zoom_out.font()
+        font.setPointSize(10)
+        font.setBold(True)
+        self.btn_zoom_out.setFont(font)
+
+        # --- ZOOM IN (+) ---
+        self.btn_zoom_in = QToolButton()
+        self.btn_zoom_in.setText("+")
+        self.btn_zoom_in.setToolTip("Aumentar zoom")
+        self.btn_zoom_in.setObjectName("zoomToolButton")
+        self.btn_zoom_in.setAutoRaise(True)
+        self.btn_zoom_in.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
+        self.btn_zoom_in.setFont(font)
+
+
 
         self.btn_prev_page = QToolButton()
         self.btn_prev_page.setIcon(
@@ -213,25 +251,7 @@ class MainWindow(QMainWindow):
         self.btn_next_page.setIconSize(icon_size_small)
         self.btn_next_page.setToolTip("Página siguiente")
         self.btn_next_page.setObjectName("navToolButton")
-        self.btn_next_page.setAutoRaise(True)
-
-        self.btn_zoom_out = QToolButton()
-        self.btn_zoom_out.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
-        )
-        self.btn_zoom_out.setIconSize(icon_size_small)
-        self.btn_zoom_out.setObjectName("zoomToolButton")
-        self.btn_zoom_out.setToolTip("Disminuir zoom")
-        self.btn_zoom_out.setAutoRaise(True)
-
-        self.btn_zoom_in = QToolButton()
-        self.btn_zoom_in.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
-        )
-        self.btn_zoom_in.setIconSize(icon_size_small)
-        self.btn_zoom_in.setObjectName("zoomToolButton")
-        self.btn_zoom_in.setToolTip("Aumentar zoom")
-        self.btn_zoom_in.setAutoRaise(True)
+        self.btn_next_page.setAutoRaise(True)        
 
         self.btn_reset_zoom = QToolButton()
         self.btn_reset_zoom.setIcon(
@@ -264,13 +284,13 @@ class MainWindow(QMainWindow):
         self.image_scroll = image_scroll
         self.image_scroll.viewport().installEventFilter(self)
 
-        nav_panel = QWidget()
+        nav_panel = QWidget()        
         nav_panel.setObjectName("navPanel")
-        nav_layout = QVBoxLayout(nav_panel)
-        nav_layout.setContentsMargins(12, 16, 12, 16)
-        nav_layout.setSpacing(14)
+        nav_layout = QVBoxLayout(nav_panel)        
+        nav_layout.setContentsMargins(8, 12, 8, 12)   # antes 12,16,12,16
+        nav_layout.setSpacing(8)
+        nav_panel.setFixedWidth(40)
         nav_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
-
         nav_layout.addWidget(self.lbl_current_page, alignment=Qt.AlignmentFlag.AlignHCenter)
         nav_layout.addWidget(self.lbl_total_pages, alignment=Qt.AlignmentFlag.AlignHCenter)
         nav_layout.addSpacing(4)
@@ -285,8 +305,13 @@ class MainWindow(QMainWindow):
         viewer_layout = QHBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
         viewer_layout.setSpacing(10)
-        viewer_layout.addWidget(nav_panel, stretch=0)
+
+        # Primero el visor de la imagen...
         viewer_layout.addWidget(image_scroll, stretch=1)
+
+        # ...y luego la barra de navegación a la derecha
+        viewer_layout.addWidget(nav_panel, stretch=0)
+
 
         info_bar = QHBoxLayout()
         info_bar.addWidget(self.page_selector)
@@ -312,22 +337,22 @@ class MainWindow(QMainWindow):
         self._connect_signals()
 
     def _apply_styles(self) -> None:
-        """Aplica una hoja de estilos pastel."""
-
         self.setStyleSheet(
             """
             QWidget {
                 background-color: #f8fafc;
                 font-family: 'Segoe UI', 'Open Sans', sans-serif;
-                color: #1f1f1f;
+                font-size: 9pt;
+                color: #1f2933;
             }
+
+            /* Botones principales más compactos */
             QPushButton {
                 background-color: #b8e0d2;
-                padding: 10px 18px;
-                border-radius: 10px;
+                padding: 4px 10px;             /* antes 10px 18px */
+                border-radius: 6px;            /* antes 10px */
                 border: 1px solid #a1d2c5;
                 font-weight: 600;
-                letter-spacing: 0.2px;
             }
             QPushButton:hover {
                 background-color: #a5d6c9;
@@ -335,95 +360,104 @@ class MainWindow(QMainWindow):
             QPushButton:pressed {
                 background-color: #8ac3b4;
             }
+
+            /* Tablas más limpias */
             QTableWidget {
                 background-color: #ffffff;
                 border: 1px solid #dfe7ef;
-                border-radius: 12px;
+                border-radius: 6px;            /* antes 12px */
                 gridline-color: #d0d9e2;
                 selection-background-color: #e4d7ff;
-                selection-color: #1f1f1f;
+                selection-color: #111827;
                 alternate-background-color: #f4f7fb;
             }
             QHeaderView::section {
-                background-color: #d5e8f3;
+                background-color: #e5edf5;
                 border: none;
-                padding: 8px;
+                padding: 4px 6px;              /* antes 8px */
                 font-weight: 600;
+                font-size: 8pt;
                 color: #0f172a;
             }
+
             QLabel#fileLabel {
                 color: #4b5563;
+                font-size: 8pt;
             }
+
             QScrollArea {
                 border: none;
             }
+
+            /* Combos más pequeños */
             QComboBox {
-                padding: 8px 12px;
-                border-radius: 10px;
+                padding: 4px 8px;              /* antes 8px 12px */
+                border-radius: 6px;            /* antes 10px */
                 border: 1px solid #cfd8e3;
                 background-color: #ffffff;
-                min-width: 260px;
+                min-height: 24px;
             }
             QComboBox:focus {
-                border-color: #a5d6c9;
-                box-shadow: 0 0 0 3px rgba(165, 214, 201, 0.35);
+                border-color: #4ade80;
             }
             QComboBox QListView {
                 background-color: #ffffff;
-                border-radius: 10px;
-                padding: 4px 0;
+                padding: 2px 0;
             }
+
             QSplitter::handle {
                 background-color: #e1e7ef;
             }
+
+            /* Panel lateral de navegación */
             QWidget#navPanel {
-                background-color: #2f2f30;
-                border-radius: 14px;
+                background-color: #202124;
+                border-radius: 10px;           /* más fino */
             }
-            QToolButton#navToolButton, QToolButton#zoomToolButton, QToolButton#resetZoomToolButton {
+            QToolButton#navToolButton,
+            QToolButton#zoomToolButton,
+            QToolButton#resetZoomToolButton {
                 background-color: transparent;
                 border: none;
                 color: #e5e7eb;
-                padding: 6px;
+                padding: 4px;                  /* antes 6px */
             }
-            QToolButton#navToolButton:hover, QToolButton#zoomToolButton:hover, QToolButton#resetZoomToolButton:hover {
-                background-color: rgba(255, 255, 255, 0.06);
-                border-radius: 10px;
-            }
-            QToolButton#navToolButton:pressed, QToolButton#zoomToolButton:pressed, QToolButton#resetZoomToolButton:pressed {
-                background-color: rgba(255, 255, 255, 0.12);
-                border-radius: 10px;
-            }
-            QLabel#pageBadge {
-                background-color: #1f1f20;
-                color: #f5f5f5;
-                border: 1px solid #444;
+            QToolButton#navToolButton:hover,
+            QToolButton#zoomToolButton:hover,
+            QToolButton#resetZoomToolButton:hover {
+                background-color: rgba(255, 255, 255, 0.05);
                 border-radius: 8px;
-                padding: 6px 10px;
-                min-width: 34px;
-                qproperty-alignment: 'AlignCenter';
-                font-weight: 700;
+            }
+
+            QLabel#pageBadge {
+                background-color: #111827;
+                color: #f9fafb;
+                border-radius: 6px;
+                padding: 3px 6px;              /* antes 6px 10px */
+                min-width: 26px;
+                qproperty-alignment: AlignCenter;
+                font-weight: 600;
+                font-size: 8pt;
             }
             QLabel#pageTotal {
                 color: #d1d5db;
-                qproperty-alignment: 'AlignCenter';
-                font-size: 11px;
+                qproperty-alignment: AlignCenter;
+                font-size: 8pt;
             }
+
             QSpinBox#pageSelector {
                 background-color: #111827;
                 border: 1px solid #1f2937;
-                border-radius: 10px;
+                border-radius: 6px;
                 color: #e5e7eb;
-                padding: 6px 10px;
-                min-height: 32px;
+                padding: 3px 6px;
+                min-height: 22px;
+                font-size: 8pt;
             }
-            QSpinBox#pageSelector:focus {
-                border-color: #2563eb;
-                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
-            }
-        """
+            """
         )
         self.lbl_file.setObjectName("fileLabel")
+
 
     def _connect_signals(self) -> None:
         self.btn_load.clicked.connect(self._on_load_pdf)
