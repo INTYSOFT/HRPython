@@ -6,13 +6,13 @@ import json
 import tempfile
 from datetime import date, datetime
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import pandas as pd
 from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QPixmap
+from PyQt6.QtGui import QPixmap, QColor
 from PyQt6.QtWidgets import (
     QFileDialog,
     QComboBox,
@@ -125,6 +125,7 @@ class MainWindow(QMainWindow):
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
         self.btn_export = QPushButton("Exportar resultados")
+        self.btn_register = QPushButton("Registrar respuestas")
         self.lbl_file = QLabel("Ningún archivo seleccionado")
 
         toolbar.addWidget(self.combo_evaluaciones)
@@ -132,6 +133,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.btn_load)
         toolbar.addWidget(self.btn_process)
         toolbar.addWidget(self.btn_export)
+        toolbar.addWidget(self.btn_register)
         toolbar.addStretch(1)
         toolbar.addWidget(self.lbl_file)
 
@@ -267,6 +269,7 @@ class MainWindow(QMainWindow):
         self.btn_load.clicked.connect(self._on_load_pdf)
         self.btn_process.clicked.connect(self._on_process)
         self.btn_export.clicked.connect(self._on_export)
+        self.btn_register.clicked.connect(self._on_register_responses)
         self.table_students.itemSelectionChanged.connect(self._on_student_selected)
         self.table_not_found.itemSelectionChanged.connect(
             self._on_not_found_selected
@@ -325,6 +328,7 @@ class MainWindow(QMainWindow):
             self.btn_load,
             self.btn_process,
             self.btn_export,
+            self.btn_register,
             self.combo_evaluaciones,
             self.combo_secciones,
         ):
@@ -451,6 +455,11 @@ class MainWindow(QMainWindow):
             nombre = item.get("nombre") or item.get("Nombre")
             if not nombre:
                 continue
+            evaluacion_id = (
+                item.get("evaluacionId")
+                or item.get("EvaluacionId")
+                or item.get("evaluacion_id")
+            )
             fecha_val = (
                 item.get("fechaInicio")
                 or item.get("fecha_inicio")
@@ -462,6 +471,8 @@ class MainWindow(QMainWindow):
                     "id": item.get("id") or item.get("Id"),
                     "nombre": nombre,
                     "fecha_inicio": fecha_texto,
+                    "evaluacionId": evaluacion_id,
+                    "version": item.get("version") or item.get("Version"),
                 }
             )
         return normalizadas
@@ -553,6 +564,20 @@ class MainWindow(QMainWindow):
                     "alumno": nombre_completo,
                     "ciclo": item.get("Ciclo") or item.get("ciclo") or "",
                     "seccion": item.get("Seccion") or item.get("seccion") or "",
+                    "evaluacionId": item.get("evaluacionId")
+                    or item.get("EvaluacionId")
+                    or item.get("evaluacion_id"),
+                    "evaluacionProgramadaId": item.get("evaluacionProgramadaId")
+                    or item.get("EvaluacionProgramadaId"),
+                    "seccionId": item.get("SeccionId")
+                    or item.get("seccionId")
+                    or item.get("seccion_id"),
+                    "alumnoId": item.get("AlumnoId")
+                    or item.get("alumnoId")
+                    or item.get("alumno_id"),
+                    "version": item.get("Version")
+                    or item.get("version")
+                    or item.get("version_respuesta"),
                 }
             )
         return normalizadas
@@ -713,6 +738,260 @@ class MainWindow(QMainWindow):
             pass
 
         self._refrescar_tabla_filtrada()
+
+    # ----------------------------------------------------- registro respuestas
+    def _on_register_responses(self) -> None:
+        evaluacion_data = self.combo_evaluaciones.currentData()
+        if not evaluacion_data or not evaluacion_data.get("id"):
+            QMessageBox.warning(
+                self,
+                "Evaluación requerida",
+                "Seleccione una evaluación antes de registrar respuestas.",
+            )
+            return
+
+        if self.table_students.rowCount() == 0:
+            QMessageBox.warning(
+                self,
+                "Sin alumnos",
+                "No hay alumnos cargados para registrar respuestas.",
+            )
+            return
+
+        filas_validas = self._validar_tabla_alumnos()
+        if not filas_validas:
+            QMessageBox.warning(
+                self,
+                "Datos incompletos",
+                "Complete página, DNI y nombre en todas las filas resaltadas.",
+            )
+            return
+
+        payload, advertencias, alumnos_incluidos = self._construir_payload_respuestas(
+            int(evaluacion_data["id"]), evaluacion_data
+        )
+
+        if not payload:
+            resumen = "No se encontraron respuestas escaneadas para registrar."
+            if advertencias:
+                resumen = f"{resumen}\n\n" + "\n".join(advertencias)
+            QMessageBox.warning(self, "Sin respuestas", resumen)
+            return
+
+        self.btn_register.setEnabled(False)
+        try:
+            existen_previas = self._existen_respuestas_previas(
+                int(evaluacion_data["id"])
+            )
+            if existen_previas is None:
+                return
+            if existen_previas:
+                decision = QMessageBox.question(
+                    self,
+                    "Reemplazar respuestas",
+                    "Ya existen respuestas registradas para esta evaluación.\n"
+                    "¿Desea reemplazarlas con las respuestas escaneadas?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.No,
+                )
+                if decision != QMessageBox.StandardButton.Yes:
+                    return
+                if not self._eliminar_respuestas_previas(int(evaluacion_data["id"])):
+                    return
+
+            registrados = self._enviar_respuestas(payload)
+            if registrados == 0:
+                QMessageBox.warning(
+                    self,
+                    "Registro incompleto",
+                    "No se pudo registrar ninguna respuesta.",
+                )
+                return
+
+            resumen = (
+                f"Se registraron respuestas para {len(alumnos_incluidos)} alumno(s)."
+            )
+            if advertencias:
+                resumen = f"{resumen}\n\nAdvertencias:\n- " + "\n- ".join(
+                    advertencias
+                )
+            QMessageBox.information(self, "Registro finalizado", resumen)
+        finally:
+            self.btn_register.setEnabled(True)
+
+    def _validar_tabla_alumnos(self) -> bool:
+        valido = True
+        color_error = QColor("#fecdd3")
+        color_base = self.table_students.palette().base().color()
+        for row in range(self.table_students.rowCount()):
+            pagina_item = self.table_students.item(row, 0)
+            dni_item = self.table_students.item(row, 1)
+            nombre_item = self.table_students.item(row, 2)
+
+            fila_valida = True
+
+            for col in range(self.table_students.columnCount()):
+                item = self.table_students.item(row, col)
+                if item:
+                    item.setBackground(color_base)
+
+            if not pagina_item or not pagina_item.text().strip():
+                fila_valida = False
+            if not dni_item or not dni_item.text().strip():
+                fila_valida = False
+            if not nombre_item or not nombre_item.text().strip():
+                fila_valida = False
+
+            if not fila_valida:
+                valido = False
+                for col in range(self.table_students.columnCount()):
+                    item = self.table_students.item(row, col)
+                    if item:
+                        item.setBackground(color_error)
+        return valido
+
+    def _construir_payload_respuestas(
+        self, evaluacion_programada_id: int, evaluacion_data: dict
+    ) -> Tuple[List[dict], List[str], Set[str]]:
+        payload: List[dict] = []
+        advertencias: List[str] = []
+        alumnos_incluidos: Set[str] = set()
+        fecha_envio = datetime.now().isoformat()
+
+        for row in range(self.table_students.rowCount()):
+            dni = (self.table_students.item(row, 1) or QTableWidgetItem(""))
+            nombre = (self.table_students.item(row, 2) or QTableWidgetItem(""))
+            pagina_item = self.table_students.item(row, 0)
+            dni_valor = dni.text().strip()
+            nombre_valor = nombre.text().strip()
+            pagina_valor = pagina_item.text().strip() if pagina_item else ""
+
+            if not dni_valor:
+                advertencias.append(
+                    f"La fila {row + 1} no tiene DNI asignado en la evaluación."
+                )
+                continue
+
+            detalle_alumno = next(
+                (item for item in self.evaluacion_detalle if item.get("dni") == dni_valor),
+                None,
+            )
+            if detalle_alumno is None:
+                advertencias.append(
+                    f"El DNI {dni_valor} no pertenece a la evaluación seleccionada."
+                )
+                continue
+
+            hoja = self.resultados_por_dni.get(dni_valor)
+            if hoja is None:
+                advertencias.append(
+                    f"No se encontraron respuestas escaneadas para el DNI {dni_valor}."
+                )
+                continue
+
+            if not hoja.respuestas:
+                advertencias.append(
+                    f"La hoja del DNI {dni_valor} no contiene respuestas detectadas."
+                )
+                continue
+
+            if pagina_valor and str(hoja.pagina) != pagina_valor:
+                advertencias.append(
+                    f"La página indicada ({pagina_valor}) para {dni_valor} no coincide con la hoja escaneada ({hoja.pagina})."
+                )
+
+            for respuesta in hoja.respuestas:
+                payload.append(
+                    {
+                        "evaluacionId": (
+                            detalle_alumno.get("evaluacionId")
+                            or detalle_alumno.get("evaluacion_id")
+                            or evaluacion_data.get("evaluacionId")
+                            or evaluacion_data.get("evaluacion_id")
+                        ),
+                        "evaluacionProgramadaId": evaluacion_programada_id,
+                        "seccionId": detalle_alumno.get("seccionId")
+                        or detalle_alumno.get("seccion_id"),
+                        "alumnoId": detalle_alumno.get("alumnoId")
+                        or detalle_alumno.get("alumno_id"),
+                        "dniAlumno": dni_valor,
+                        "version": detalle_alumno.get("version")
+                        or detalle_alumno.get("Version")
+                        or evaluacion_data.get("version")
+                        or 1,
+                        "preguntaOrden": respuesta.pregunta,
+                        "respuesta": None
+                        if respuesta.alternativa.strip() == "-"
+                        else respuesta.alternativa,
+                        "fuente": "omr",
+                        "fechaRegistro": fecha_envio,
+                        "activo": True,
+                    }
+                )
+            alumnos_incluidos.add(dni_valor)
+
+        return payload, advertencias, alumnos_incluidos
+
+    def _existen_respuestas_previas(self, evaluacion_programada_id: int) -> Optional[bool]:
+        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/ByEvaluacionProgramada/{evaluacion_programada_id}"
+        try:
+            with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=10) as response:
+                response.read()
+            return True
+        except HTTPError as exc:  # pragma: no cover - interacción remota
+            if exc.code == 404:
+                return False
+            QMessageBox.critical(
+                self,
+                "Error de consulta",
+                f"No se pudo verificar respuestas previas ({exc}).",
+            )
+        except URLError as exc:  # pragma: no cover - interacción remota
+            QMessageBox.critical(
+                self,
+                "Error de conexión",
+                f"No se pudo verificar respuestas previas ({exc}).",
+            )
+        return None
+
+    def _eliminar_respuestas_previas(self, evaluacion_programada_id: int) -> bool:
+        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/ByEvaluacionProgramada/{evaluacion_programada_id}"
+        try:
+            with urlopen(Request(url, method="DELETE"), timeout=10) as response:
+                response.read()
+            return True
+        except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+            QMessageBox.critical(
+                self,
+                "Error eliminando",
+                f"No se pudieron eliminar respuestas previas ({exc}).",
+            )
+            return False
+
+    def _enviar_respuestas(self, payload: List[dict]) -> int:
+        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums"
+        registrados = 0
+        for item in payload:
+            data = json.dumps(item).encode("utf-8")
+            try:
+                with urlopen(
+                    Request(
+                        url,
+                        data=data,
+                        headers={"Content-Type": "application/json"},
+                    ),
+                    timeout=10,
+                ) as response:
+                    response.read()
+                registrados += 1
+            except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+                QMessageBox.critical(
+                    self,
+                    "Error de registro",
+                    f"No se pudo registrar una respuesta (pregunta {item.get('preguntaOrden')}): {exc}",
+                )
+                break
+        return registrados
 
     def _mostrar_detalle_por_indice(self, index: int) -> None:
         if index < 0 or index >= self.table_students.rowCount():
