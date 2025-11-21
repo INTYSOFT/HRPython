@@ -12,8 +12,8 @@ from urllib.request import Request, urlopen
 
 import fitz  # PyMuPDF
 import pandas as pd
-from PyQt6.QtCore import Qt, QThread, pyqtSignal, QObject
-from PyQt6.QtGui import QPixmap, QColor, QImage
+from PyQt6.QtCore import QEvent, QSize, Qt, QThread, pyqtSignal, QObject
+from PyQt6.QtGui import QPixmap, QColor, QImage, QWheelEvent
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QFileDialog,
@@ -199,6 +199,7 @@ class MainWindow(QMainWindow):
         self.btn_prev_page.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
         )
+        self.btn_prev_page.setIconSize(QSize(16, 16))
         self.btn_prev_page.setToolTip("Página anterior")
         self.btn_prev_page.setObjectName("navButton")
 
@@ -206,6 +207,7 @@ class MainWindow(QMainWindow):
         self.btn_next_page.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
         )
+        self.btn_next_page.setIconSize(QSize(16, 16))
         self.btn_next_page.setToolTip("Página siguiente")
         self.btn_next_page.setObjectName("navButton")
         self.page_selector = QSpinBox()
@@ -218,6 +220,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_out.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
         )
+        self.btn_zoom_out.setIconSize(QSize(16, 16))
         self.btn_zoom_out.setMinimumWidth(36)
         self.btn_zoom_out.setObjectName("zoomButton")
         self.btn_zoom_out.setToolTip("Disminuir zoom")
@@ -226,6 +229,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_in.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
         )
+        self.btn_zoom_in.setIconSize(QSize(16, 16))
         self.btn_zoom_in.setMinimumWidth(36)
         self.btn_zoom_in.setObjectName("zoomButton")
         self.btn_zoom_in.setToolTip("Aumentar zoom")
@@ -234,6 +238,7 @@ class MainWindow(QMainWindow):
         self.btn_reset_zoom.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
+        self.btn_reset_zoom.setIconSize(QSize(16, 16))
         self.btn_reset_zoom.setObjectName("resetZoomButton")
         self.btn_reset_zoom.setToolTip("Ajustar al visor")
         self.lbl_zoom_info = QLabel("100 %")
@@ -254,6 +259,7 @@ class MainWindow(QMainWindow):
         image_scroll.setWidget(self.image_label)
         image_scroll.setWidgetResizable(True)
         self.image_scroll = image_scroll
+        self.image_scroll.viewport().installEventFilter(self)
         right_layout.addLayout(pdf_controls)
         right_layout.addWidget(image_scroll, stretch=3)
 
@@ -340,9 +346,9 @@ class MainWindow(QMainWindow):
                 background-color: #dce7fa;
                 border: 1px solid #c4d4f5;
                 border-radius: 12px;
-                padding: 10px;
-                min-width: 42px;
-                min-height: 36px;
+                padding: 6px 10px;
+                min-width: 36px;
+                min-height: 32px;
             }
             QPushButton#navButton:hover, QPushButton#zoomButton:hover, QPushButton#resetZoomButton:hover {
                 background-color: #cddcf8;
@@ -385,6 +391,11 @@ class MainWindow(QMainWindow):
         self.btn_zoom_out.clicked.connect(self._on_zoom_out)
         self.btn_reset_zoom.clicked.connect(self._on_reset_zoom)
         self.page_selector.valueChanged.connect(self._on_page_selected)
+
+    def eventFilter(self, obj: QObject, event: QEvent) -> bool:  # pragma: no cover - interacción UI
+        if obj is self.image_scroll.viewport() and event.type() == QEvent.Type.Wheel:
+            return self._handle_wheel_zoom(event) or super().eventFilter(obj, event)
+        return super().eventFilter(obj, event)
 
     # --------------------------------------------------------------- acciones
     def _on_load_pdf(self) -> None:
@@ -1257,6 +1268,20 @@ class MainWindow(QMainWindow):
         self._zoom_factor = new_zoom
         self._update_zoom_label()
         self._render_current_page()
+
+    def _handle_wheel_zoom(self, event: QEvent) -> bool:
+        if not self._pdf_doc:
+            return False
+        wheel_event = event if isinstance(event, QWheelEvent) else None
+        if not wheel_event:
+            return False
+        delta_y = wheel_event.angleDelta().y()
+        if delta_y == 0:
+            return False
+        step_multiplier = 1 if delta_y > 0 else -1
+        self._adjust_zoom(self.ZOOM_STEP * step_multiplier)
+        wheel_event.accept()
+        return True
 
     def _calculate_fit_zoom(self, pagina: int | None = None) -> float:
         if not self._pdf_doc:
