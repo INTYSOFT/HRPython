@@ -57,6 +57,15 @@ def _log_debug(pagina: int, text: str) -> None:
 class OMRConfig:
     """Parámetros del algoritmo OMR para la hoja de Academia Lumbreras."""
 
+    # Distancia (en píxeles, a 200 dpi) desde la parte inferior de las barras
+    # de sincronización del DNI hasta la PRIMERA fila de burbujas (0).
+    dni_offset_from_rect_bottom_px: int = 880
+
+    # Altura total aproximada del bloque de burbujas del DNI (0–9).
+    # Ajusta este valor una vez midiendo en una hoja de referencia.
+    dni_block_height_px: int = 520  # por ejemplo, luego lo ajustas
+    
+
      # --- Parámetros para detectar filas de burbujas ---
     # Tamaño del kernel vertical para suavizar el perfil (debe ser impar)
     row_profile_smooth_kernel: int = 21
@@ -1187,14 +1196,38 @@ def _leer_dni(
         marks_dir = Path(config.dni_marks_dir) / f"pagina_{pagina:03d}"
         marks_dir.mkdir(parents=True, exist_ok=True)
 
-    # Banda general del bloque de DNI (aproximada, luego afinada por perfil)
-    band_top = int(h * config.dni_vertical_band[0])
-    band_bottom = int(h * config.dni_vertical_band[1])
-    band_top = max(0, min(band_top, h - 1))
+        # === NUEVO: banda del DNI ANCLADA a las barras inferiores ===
+    # columnas = barras del DNI: (x, y, w, h)
+    # Usamos la mediana de los bottoms para ser robustos frente a pequeños desalineamientos.
+    rect_bottoms = [y + rh for (_, y, _, rh) in columnas]
+    if not rect_bottoms:
+        # Fallback viejo por si acaso (no debería ocurrir si ya validaste anchors)
+        band_top = int(h * config.dni_vertical_band[0])
+        band_bottom = int(h * config.dni_vertical_band[1])
+    else:
+        rect_bottom_med = int(np.median(rect_bottoms))  # coordenada Y global
+
+        # Distancia hacia arriba desde el bottom de la barra hasta la fila de 0
+        offset = int(config.dni_offset_from_rect_bottom_px)
+
+        # Coordenada Y global aproximada de la fila del 0
+        y_cero_aprox = rect_bottom_med - offset
+
+        # Elegimos el inicio de la banda un poco por encima de esa fila
+        # (por ejemplo, media altura de una burbuja por encima).
+        # Si no quieres complicarte, puedes usar directamente y_cero_aprox.
+        band_top = max(y_cero_aprox - 20, 0)  # 20 px de margen arriba
+
+        # Altura total del bloque de burbujas del DNI
+        band_bottom = band_top + int(config.dni_block_height_px)
+
+    # Aseguramos que está dentro de la imagen
+    band_top = max(0, min(band_top, h - 2))
     band_bottom = max(band_top + 1, min(band_bottom, h))
 
     banda = gray[band_top:band_bottom, :]
     band_height = banda.shape[0]
+
 
     if debug_root:
         cv2.imwrite(str(debug_root / "dni_band_cruda.png"), banda)
