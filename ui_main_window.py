@@ -134,15 +134,28 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
-        central = QWidget()
-        layout = QVBoxLayout(central)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        # ---------- WIDGET CENTRAL Y LAYOUT RAÍZ ----------
+        central = QWidget(self)
+        self.setCentralWidget(central)
 
-        # Encabezado
+        main_layout = QVBoxLayout(central)
+        # top = 0 para que todo quede pegado al borde superior de la ventana
+        main_layout.setContentsMargins(0, 0, 0, 8)
+        main_layout.setSpacing(4)
+
+        # ==================================================
+        #      ZONA SUPERIOR: TÍTULO + CONTROLES
+        # ==================================================
+        top_container = QWidget()
+        top_layout = QVBoxLayout(top_container)
+        # solo un poco de margen lateral y abajo, nada arriba
+        top_layout.setContentsMargins(8, 0, 8, 4)
+        top_layout.setSpacing(2)
+
+        # ------- fila 1: encabezado (logo + título) -------
         header = QHBoxLayout()
-        header.setContentsMargins(4, 0, 4, 0)
-        header.setSpacing(10)
+        header.setContentsMargins(0, 0, 0, 0)
+        header.setSpacing(6)
 
         self.logo_badge = QLabel("OMR")
         self.logo_badge.setObjectName("logoBadge")
@@ -155,26 +168,26 @@ class MainWindow(QMainWindow):
         header.addWidget(self.title_label)
         header.addStretch(1)
 
-        layout.addLayout(header)
-
-        # Barra de acciones
+        # ------- fila 2: barra de acciones -------
         toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 4, 0, 4)
-        toolbar.setSpacing(8)
+        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar.setSpacing(6)
 
-        self.combo_evaluaciones = QComboBox()        
+        self.combo_evaluaciones = QComboBox()
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
-        self.combo_evaluaciones.setMinimumWidth(120)
-        
+        self.combo_evaluaciones.setMinimumWidth(180)
+
         self.combo_secciones = QComboBox()
         self.combo_secciones.setPlaceholderText("Seleccione sección")
-        self.combo_secciones.setMinimumWidth(120)
+        self.combo_secciones.setMinimumWidth(180)
 
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
         self.btn_export = QPushButton("Exportar resultados")
         self.btn_register = QPushButton("Registrar respuestas")
+
         self.lbl_file = QLabel("Ningún archivo seleccionado")
+        self.lbl_file.setObjectName("fileLabel")
 
         toolbar.addWidget(self.combo_evaluaciones)
         toolbar.addWidget(self.combo_secciones)
@@ -185,24 +198,35 @@ class MainWindow(QMainWindow):
         toolbar.addStretch(1)
         toolbar.addWidget(self.lbl_file)
 
-        layout.addLayout(toolbar)
+        # agregar al contenedor superior
+        top_layout.addLayout(header)
+        top_layout.addLayout(toolbar)
 
-        splitter = QSplitter()
-        splitter.setOrientation(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(4)  # más fino
+        # contenedor superior primero en el layout principal
+        main_layout.addWidget(top_container, 0)
 
-        # Panel izquierdo (alumnos y no encontrados)
+        # ==================================================
+        #      ZONA CENTRAL: SPLITTER (TABLAS + VISOR)
+        # ==================================================
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.setHandleWidth(4)
+
+        # ------------ Panel izquierdo (tablas) ------------
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(0, 0, 0, 0)
-        left_layout.setSpacing(8)
+        left_layout.setContentsMargins(8, 0, 4, 0)
+        left_layout.setSpacing(6)
 
         self.table_students = QTableWidget(0, 5)
         self.table_students.setHorizontalHeaderLabels(
             ["Página", "DNI", "Alumno", "Ciclo", "Sección"]
         )
-        self.table_students.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
-        self.table_students.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
+        self.table_students.setSelectionBehavior(
+            QTableWidget.SelectionBehavior.SelectRows
+        )
+        self.table_students.setSelectionMode(
+            QTableWidget.SelectionMode.SingleSelection
+        )
         self.table_students.verticalHeader().setVisible(False)
         self.table_students.setAlternatingRowColors(True)
         left_layout.addWidget(self.table_students, stretch=3)
@@ -225,36 +249,36 @@ class MainWindow(QMainWindow):
 
         lower_tables = QHBoxLayout()
         lower_tables.setContentsMargins(0, 0, 0, 0)
-        lower_tables.setSpacing(8)
+        lower_tables.setSpacing(6)
         lower_tables.addWidget(self.table_not_found, stretch=1)
         lower_tables.addWidget(self.table_answers, stretch=2)
 
         left_layout.addLayout(lower_tables, stretch=4)
 
-        splitter.addWidget(left_panel)
+        splitter.addWidget(left_panel)       
 
-        # Panel derecho (solo visor PDF)
+
+        # ------------ Panel derecho (visor PDF) -----------
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(6)
+        right_layout.setContentsMargins(4, 0, 8, 0)
+        right_layout.setSpacing(4)
 
         icon_size_small = QSize(10, 10)
-        # --- ZOOM OUT (-) ---
+
+        # botones de zoom
         self.btn_zoom_out = QToolButton()
-        self.btn_zoom_out.setText("−")  # puedes usar "-" si prefieres
+        self.btn_zoom_out.setText("−")
         self.btn_zoom_out.setToolTip("Disminuir zoom")
         self.btn_zoom_out.setObjectName("zoomToolButton")
         self.btn_zoom_out.setAutoRaise(True)
         self.btn_zoom_out.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
-        # opcional: hacer el texto un poquito más “gordito”
         font = self.btn_zoom_out.font()
         font.setPointSize(10)
         font.setBold(True)
         self.btn_zoom_out.setFont(font)
 
-        # --- ZOOM IN (+) ---
         self.btn_zoom_in = QToolButton()
         self.btn_zoom_in.setText("+")
         self.btn_zoom_in.setToolTip("Aumentar zoom")
@@ -263,8 +287,7 @@ class MainWindow(QMainWindow):
         self.btn_zoom_in.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
         self.btn_zoom_in.setFont(font)
 
-
-
+        # navegación de páginas
         self.btn_prev_page = QToolButton()
         self.btn_prev_page.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
@@ -281,7 +304,7 @@ class MainWindow(QMainWindow):
         self.btn_next_page.setIconSize(icon_size_small)
         self.btn_next_page.setToolTip("Página siguiente")
         self.btn_next_page.setObjectName("navToolButton")
-        self.btn_next_page.setAutoRaise(True)        
+        self.btn_next_page.setAutoRaise(True)
 
         self.btn_reset_zoom = QToolButton()
         self.btn_reset_zoom.setIcon(
@@ -298,17 +321,20 @@ class MainWindow(QMainWindow):
         self.page_selector.setMinimumWidth(60)
         self.page_selector.setObjectName("pageSelector")
         self.page_selector.setVisible(False)
+
         self.lbl_page_info = QLabel("Página 0 / 0")
-        self.lbl_current_page = QLabel("1")
+        self.lbl_current_page = QLabel("0")
         self.lbl_current_page.setObjectName("pageBadge")
-        self.lbl_total_pages = QLabel("1")
+        self.lbl_total_pages = QLabel("0")
         self.lbl_total_pages.setObjectName("pageTotal")
         self.lbl_zoom_info = QLabel("100 %")
 
+        # visor de imagen / pdf
         self.image_label = QLabel("Seleccione un alumno")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setMinimumHeight(350)
         self.image_label.setMouseTracking(True)
+
         image_scroll = QScrollArea()
         image_scroll.setWidget(self.image_label)
         image_scroll.setWidgetResizable(True)
@@ -316,13 +342,15 @@ class MainWindow(QMainWindow):
         self.image_scroll.viewport().installEventFilter(self)
         self.image_label.installEventFilter(self)
 
-        nav_panel = QWidget()        
+        # barra lateral de navegación/zoom
+        nav_panel = QWidget()
         nav_panel.setObjectName("navPanel")
-        nav_layout = QVBoxLayout(nav_panel)        
-        nav_layout.setContentsMargins(8, 12, 8, 12)   # antes 12,16,12,16
-        nav_layout.setSpacing(8)
-        nav_panel.setFixedWidth(40)
+        nav_layout = QVBoxLayout(nav_panel)
+        nav_layout.setContentsMargins(8, 8, 8, 8)
+        nav_layout.setSpacing(6)
+        nav_panel.setFixedWidth(44)
         nav_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+
         nav_layout.addWidget(self.lbl_current_page, alignment=Qt.AlignmentFlag.AlignHCenter)
         nav_layout.addWidget(self.lbl_total_pages, alignment=Qt.AlignmentFlag.AlignHCenter)
         nav_layout.addSpacing(4)
@@ -336,14 +364,9 @@ class MainWindow(QMainWindow):
 
         viewer_layout = QHBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
-        viewer_layout.setSpacing(10)
-
-        # Primero el visor de la imagen...
+        viewer_layout.setSpacing(6)
         viewer_layout.addWidget(image_scroll, stretch=1)
-
-        # ...y luego la barra de navegación a la derecha
         viewer_layout.addWidget(nav_panel, stretch=0)
-
 
         info_bar = QHBoxLayout()
         info_bar.addWidget(self.page_selector)
@@ -355,12 +378,20 @@ class MainWindow(QMainWindow):
         right_layout.addLayout(info_bar)
 
         splitter.addWidget(right_panel)
-        layout.addWidget(splitter)
+        
 
-        self.setCentralWidget(central)
+        # splitter ocupa todo el espacio restante
+        # 40% (izquierda) y 60% (derecha)
+        splitter.setStretchFactor(0, 15)   # índice 0 -> left_panel
+        splitter.setStretchFactor(1, 85)   # índice 1 -> right_panel
 
+        main_layout.addWidget(splitter, 1)
+        
+
+        # estilos y señales se aplican fuera
         self._apply_styles()
         self._connect_signals()
+
 
     def _apply_styles(self) -> None:
         self.setStyleSheet(
