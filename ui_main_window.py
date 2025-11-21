@@ -47,11 +47,18 @@ class _ProcessWorker(QObject):
 
     def run(self) -> None:
         try:
+            def _progress_wrapper(current: int, total: int) -> None:
+                if total <= 0:
+                    self.progress.emit(0)
+                    return
+                porcentaje = int(max(0, min(100, (current * 100) / total)))
+                self.progress.emit(porcentaje)
+
             resultados = procesar_pdf(
                 self.pdf_path,
                 self.cache_dir,
                 self.config,
-                progress_callback=self.progress.emit,
+                progress_callback=_progress_wrapper,
             )
         except Exception as exc:  # pragma: no cover - mostrado en UI
             self.error.emit(str(exc))

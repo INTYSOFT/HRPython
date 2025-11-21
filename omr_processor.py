@@ -776,7 +776,11 @@ def procesar_pdf(
     cache_dir.mkdir(parents=True, exist_ok=True)
 
     doc = fitz.open(pdf_path)
+    total_paginas = len(doc)
     resultados: List[AlumnoHoja] = []
+
+    if progress_callback is not None:
+        progress_callback(0, total_paginas)
 
     for index, page in enumerate(doc, start=1):
         # inicializamos log de la página
@@ -807,6 +811,8 @@ def procesar_pdf(
                     imagen_path=img_path,
                 )
             )
+            if progress_callback is not None:
+                progress_callback(index, total_paginas)
             continue
 
         # Las primeras N barras son las del bloque de DNI.
@@ -848,6 +854,12 @@ def procesar_pdf(
                 imagen_path=img_path,
             )
         )
+
+        if progress_callback is not None:
+            progress_callback(index, total_paginas)
+
+    if progress_callback is not None:
+        progress_callback(total_paginas, total_paginas)
 
     return resultados
 
