@@ -32,6 +32,7 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QProgressBar,
     QSpinBox,
+    QToolButton,
 )
 
 from models import AlumnoHoja, Respuesta
@@ -194,65 +195,65 @@ class MainWindow(QMainWindow):
         right_panel = QWidget()
         right_layout = QVBoxLayout(right_panel)
 
-        pdf_controls = QHBoxLayout()
-        icon_size_small = QSize(10, 10)
+        icon_size_small = QSize(20, 20)
 
-        self.btn_prev_page = QPushButton()
+        self.btn_prev_page = QToolButton()
         self.btn_prev_page.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowBack)
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
         )
         self.btn_prev_page.setIconSize(icon_size_small)
         self.btn_prev_page.setToolTip("Página anterior")
-        self.btn_prev_page.setObjectName("navButton")
+        self.btn_prev_page.setObjectName("navToolButton")
+        self.btn_prev_page.setAutoRaise(True)
 
-        self.btn_next_page = QPushButton()
+        self.btn_next_page = QToolButton()
         self.btn_next_page.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowForward)
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
         )
         self.btn_next_page.setIconSize(icon_size_small)
         self.btn_next_page.setToolTip("Página siguiente")
-        self.btn_next_page.setObjectName("navButton")
-        self.page_selector = QSpinBox()
-        self.page_selector.setRange(1, 1)
-        self.page_selector.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.PlusMinus)
-        self.page_selector.setMinimumWidth(90)
-        self.page_selector.setObjectName("pageSelector")
-        self.lbl_page_info = QLabel("Página 0 / 0")
-        self.btn_zoom_out = QPushButton()
+        self.btn_next_page.setObjectName("navToolButton")
+        self.btn_next_page.setAutoRaise(True)
+
+        self.btn_zoom_out = QToolButton()
         self.btn_zoom_out.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogDetailedView)
         )
         self.btn_zoom_out.setIconSize(icon_size_small)
-        self.btn_zoom_out.setMinimumWidth(28)
-        self.btn_zoom_out.setObjectName("zoomButton")
+        self.btn_zoom_out.setObjectName("zoomToolButton")
         self.btn_zoom_out.setToolTip("Disminuir zoom")
+        self.btn_zoom_out.setAutoRaise(True)
 
-        self.btn_zoom_in = QPushButton()
+        self.btn_zoom_in = QToolButton()
         self.btn_zoom_in.setIcon(
-            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
+            self.style().standardIcon(QStyle.StandardPixmap.SP_FileDialogContentsView)
         )
         self.btn_zoom_in.setIconSize(icon_size_small)
-        self.btn_zoom_in.setMinimumWidth(28)
-        self.btn_zoom_in.setObjectName("zoomButton")
+        self.btn_zoom_in.setObjectName("zoomToolButton")
         self.btn_zoom_in.setToolTip("Aumentar zoom")
+        self.btn_zoom_in.setAutoRaise(True)
 
-        self.btn_reset_zoom = QPushButton()
+        self.btn_reset_zoom = QToolButton()
         self.btn_reset_zoom.setIcon(
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
         self.btn_reset_zoom.setIconSize(icon_size_small)
-        self.btn_reset_zoom.setObjectName("resetZoomButton")
+        self.btn_reset_zoom.setObjectName("resetZoomToolButton")
         self.btn_reset_zoom.setToolTip("Ajustar al visor")
+        self.btn_reset_zoom.setAutoRaise(True)
+
+        self.page_selector = QSpinBox()
+        self.page_selector.setRange(1, 1)
+        self.page_selector.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
+        self.page_selector.setMinimumWidth(60)
+        self.page_selector.setObjectName("pageSelector")
+        self.page_selector.setVisible(False)
+        self.lbl_page_info = QLabel("Página 0 / 0")
+        self.lbl_current_page = QLabel("1")
+        self.lbl_current_page.setObjectName("pageBadge")
+        self.lbl_total_pages = QLabel("1")
+        self.lbl_total_pages.setObjectName("pageTotal")
         self.lbl_zoom_info = QLabel("100 %")
-        pdf_controls.addWidget(self.btn_prev_page)
-        pdf_controls.addWidget(self.btn_next_page)
-        pdf_controls.addWidget(self.page_selector)
-        pdf_controls.addWidget(self.lbl_page_info)
-        pdf_controls.addStretch(1)
-        pdf_controls.addWidget(self.btn_zoom_out)
-        pdf_controls.addWidget(self.btn_zoom_in)
-        pdf_controls.addWidget(self.btn_reset_zoom)
-        pdf_controls.addWidget(self.lbl_zoom_info)
 
         self.image_label = QLabel("Seleccione un alumno")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -262,8 +263,39 @@ class MainWindow(QMainWindow):
         image_scroll.setWidgetResizable(True)
         self.image_scroll = image_scroll
         self.image_scroll.viewport().installEventFilter(self)
-        right_layout.addLayout(pdf_controls)
-        right_layout.addWidget(image_scroll, stretch=3)
+
+        nav_panel = QWidget()
+        nav_panel.setObjectName("navPanel")
+        nav_layout = QVBoxLayout(nav_panel)
+        nav_layout.setContentsMargins(12, 16, 12, 16)
+        nav_layout.setSpacing(14)
+        nav_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
+
+        nav_layout.addWidget(self.lbl_current_page, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addWidget(self.lbl_total_pages, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addSpacing(4)
+        nav_layout.addWidget(self.btn_prev_page, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addWidget(self.btn_next_page, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addSpacing(6)
+        nav_layout.addWidget(self.btn_reset_zoom, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addWidget(self.btn_zoom_in, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addWidget(self.btn_zoom_out, alignment=Qt.AlignmentFlag.AlignHCenter)
+        nav_layout.addStretch(1)
+
+        viewer_layout = QHBoxLayout()
+        viewer_layout.setContentsMargins(0, 0, 0, 0)
+        viewer_layout.setSpacing(10)
+        viewer_layout.addWidget(nav_panel, stretch=0)
+        viewer_layout.addWidget(image_scroll, stretch=1)
+
+        info_bar = QHBoxLayout()
+        info_bar.addWidget(self.page_selector)
+        info_bar.addWidget(self.lbl_page_info)
+        info_bar.addStretch(1)
+        info_bar.addWidget(self.lbl_zoom_info)
+
+        right_layout.addLayout(viewer_layout, stretch=3)
+        right_layout.addLayout(info_bar)
 
         self.table_answers = QTableWidget(0, 3)
         self.table_answers.setHorizontalHeaderLabels(["Pregunta", "Respuesta", "Estado"])
@@ -344,30 +376,50 @@ class MainWindow(QMainWindow):
             QSplitter::handle {
                 background-color: #e1e7ef;
             }
-            QPushButton#navButton, QPushButton#zoomButton, QPushButton#resetZoomButton {
-                background-color: #dce7fa;
-                border: 1px solid #c4d4f5;
+            QWidget#navPanel {
+                background-color: #2f2f30;
+                border-radius: 14px;
+            }
+            QToolButton#navToolButton, QToolButton#zoomToolButton, QToolButton#resetZoomToolButton {
+                background-color: transparent;
+                border: none;
+                color: #e5e7eb;
+                padding: 6px;
+            }
+            QToolButton#navToolButton:hover, QToolButton#zoomToolButton:hover, QToolButton#resetZoomToolButton:hover {
+                background-color: rgba(255, 255, 255, 0.06);
                 border-radius: 10px;
-                padding: 4px 8px;
-                min-width: 28px;
-                min-height: 26px;
             }
-            QPushButton#navButton:hover, QPushButton#zoomButton:hover, QPushButton#resetZoomButton:hover {
-                background-color: #cddcf8;
+            QToolButton#navToolButton:pressed, QToolButton#zoomToolButton:pressed, QToolButton#resetZoomToolButton:pressed {
+                background-color: rgba(255, 255, 255, 0.12);
+                border-radius: 10px;
             }
-            QPushButton#navButton:pressed, QPushButton#zoomButton:pressed, QPushButton#resetZoomButton:pressed {
-                background-color: #b4c7f2;
+            QLabel#pageBadge {
+                background-color: #1f1f20;
+                color: #f5f5f5;
+                border: 1px solid #444;
+                border-radius: 8px;
+                padding: 6px 10px;
+                min-width: 34px;
+                qproperty-alignment: 'AlignCenter';
+                font-weight: 700;
+            }
+            QLabel#pageTotal {
+                color: #d1d5db;
+                qproperty-alignment: 'AlignCenter';
+                font-size: 11px;
             }
             QSpinBox#pageSelector {
-                background-color: #ffffff;
-                border: 1px solid #c4d4f5;
+                background-color: #111827;
+                border: 1px solid #1f2937;
                 border-radius: 10px;
+                color: #e5e7eb;
                 padding: 6px 10px;
-                min-height: 36px;
+                min-height: 32px;
             }
             QSpinBox#pageSelector:focus {
-                border-color: #9bb7ef;
-                box-shadow: 0 0 0 3px rgba(155, 183, 239, 0.35);
+                border-color: #2563eb;
+                box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.35);
             }
         """
         )
@@ -479,6 +531,8 @@ class MainWindow(QMainWindow):
         self._zoom_factor = 1.0
         self.lbl_zoom_info.setText("100 %")
         self.lbl_page_info.setText("Página 0 / 0")
+        self.lbl_current_page.setText("0")
+        self.lbl_total_pages.setText("0")
         self.page_selector.blockSignals(True)
         self.page_selector.setRange(1, 1)
         self.page_selector.setValue(1)
@@ -1259,6 +1313,8 @@ class MainWindow(QMainWindow):
 
     def _update_page_label(self, current: int, total: int) -> None:
         self.lbl_page_info.setText(f"Página {current} / {total}")
+        self.lbl_current_page.setText(str(current))
+        self.lbl_total_pages.setText(str(total))
 
     def _update_zoom_label(self) -> None:
         self.lbl_zoom_info.setText(f"{int(self._zoom_factor * 100)} %")
