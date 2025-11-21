@@ -195,7 +195,7 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
 
         pdf_controls = QHBoxLayout()
-        icon_size_small = QSize(12, 12)
+        icon_size_small = QSize(10, 10)
 
         self.btn_prev_page = QPushButton()
         self.btn_prev_page.setIcon(
@@ -223,7 +223,7 @@ class MainWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowDown)
         )
         self.btn_zoom_out.setIconSize(icon_size_small)
-        self.btn_zoom_out.setMinimumWidth(36)
+        self.btn_zoom_out.setMinimumWidth(28)
         self.btn_zoom_out.setObjectName("zoomButton")
         self.btn_zoom_out.setToolTip("Disminuir zoom")
 
@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowUp)
         )
         self.btn_zoom_in.setIconSize(icon_size_small)
-        self.btn_zoom_in.setMinimumWidth(36)
+        self.btn_zoom_in.setMinimumWidth(28)
         self.btn_zoom_in.setObjectName("zoomButton")
         self.btn_zoom_in.setToolTip("Aumentar zoom")
 
@@ -347,10 +347,10 @@ class MainWindow(QMainWindow):
             QPushButton#navButton, QPushButton#zoomButton, QPushButton#resetZoomButton {
                 background-color: #dce7fa;
                 border: 1px solid #c4d4f5;
-                border-radius: 12px;
-                padding: 6px 10px;
-                min-width: 36px;
-                min-height: 32px;
+                border-radius: 10px;
+                padding: 4px 8px;
+                min-width: 28px;
+                min-height: 26px;
             }
             QPushButton#navButton:hover, QPushButton#zoomButton:hover, QPushButton#resetZoomButton:hover {
                 background-color: #cddcf8;
