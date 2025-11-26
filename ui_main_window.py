@@ -989,6 +989,26 @@ class MainWindow(QMainWindow):
         self.combo_secciones.setCurrentIndex(0)
         self.combo_secciones.blockSignals(False)
 
+    def _obtener_seccion_id_actual(self) -> Optional[int]:
+        filtro = self.combo_secciones.currentData()
+        if filtro in (None, self.ALL_SECTIONS_KEY):
+            return None
+
+        for item in self.evaluacion_detalle:
+            nombre = (item.get("seccion") or "").strip()
+            if nombre != filtro:
+                continue
+            seccion_id = (
+                item.get("seccionId")
+                or item.get("seccion_id")
+                or item.get("SeccionId")
+            )
+            try:
+                return int(seccion_id)
+            except (TypeError, ValueError):
+                continue
+        return None
+
     def _reset_secciones(self) -> None:
         self.combo_secciones.blockSignals(True)
         self.combo_secciones.clear()
@@ -1133,6 +1153,15 @@ class MainWindow(QMainWindow):
             )
             return
 
+        seccion_id = self._obtener_seccion_id_actual()
+        if seccion_id is None:
+            QMessageBox.warning(
+                self,
+                "Sección requerida",
+                "Seleccione una sección válida antes de registrar respuestas.",
+            )
+            return
+
         if self.table_students.rowCount() == 0:
             QMessageBox.warning(
                 self,
@@ -1191,9 +1220,17 @@ class MainWindow(QMainWindow):
                 )
                 return
 
+            consolidada = self._consolidar_evaluacion(
+                int(evaluacion_data["id"]), seccion_id
+            )
+
             resumen = (
                 f"Se registraron respuestas para {len(alumnos_incluidos)} alumno(s)."
             )
+            if consolidada:
+                resumen = (
+                    f"{resumen}\n\nConsolidación ejecutada correctamente para la sección seleccionada."
+                )
             if advertencias:
                 resumen = f"{resumen}\n\nAdvertencias:\n- " + "\n- ".join(
                     advertencias
@@ -1406,6 +1443,34 @@ class MainWindow(QMainWindow):
                 break
 
         return registrados
+
+    def _consolidar_evaluacion(
+        self, evaluacion_programada_id: int, seccion_id: int
+    ) -> bool:
+        url = (
+            f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/consolidar"
+            f"?evaluacionProgramadaId={evaluacion_programada_id}&seccionId={seccion_id}"
+        )
+        try:
+            with urlopen(
+                Request(url, method="POST", headers={"Accept": "application/json"}),
+                timeout=30,
+            ) as response:
+                response.read()
+            return True
+        except HTTPError as exc:  # pragma: no cover - interacción remota
+            QMessageBox.warning(
+                self,
+                "Consolidación incompleta",
+                f"No se pudo consolidar la evaluación ({exc}).",
+            )
+        except URLError as exc:  # pragma: no cover - interacción remota
+            QMessageBox.warning(
+                self,
+                "Consolidación incompleta",
+                f"No se pudo acceder al servicio de consolidación ({exc}).",
+            )
+        return False
 
 
 
