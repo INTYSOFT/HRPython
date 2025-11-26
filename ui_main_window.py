@@ -1448,7 +1448,7 @@ class MainWindow(QMainWindow):
         self, evaluacion_programada_id: int, seccion_id: int
     ) -> bool:
         url = (
-            f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/consolidar"
+            f"{self.API_BASE.rstrip('/')}/api/EvaluacionNotaus/consolidar"
             f"?evaluacionProgramadaId={evaluacion_programada_id}&seccionId={seccion_id}"
         )
         try:
