@@ -1,10 +1,15 @@
 """Definición de la ventana principal basada en PyQt6."""
 
 from __future__ import annotations
+from urllib.error import HTTPError, URLError
+import socket
 
 import json
 import tempfile
+
 from datetime import date, datetime
+from time import timezone
+
 from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
@@ -1234,7 +1239,9 @@ class MainWindow(QMainWindow):
         payload: List[dict] = []
         advertencias: List[str] = []
         alumnos_incluidos: Set[str] = set()
-        fecha_envio = datetime.now().isoformat()
+        #fecha_envio = datetime.now().isoformat()        
+        #fecha_envio = datetime.now(timezone.utc).isoformat()
+
 
         for row in range(self.table_students.rowCount()):
             dni = (self.table_students.item(row, 1) or QTableWidgetItem(""))
@@ -1302,7 +1309,7 @@ class MainWindow(QMainWindow):
                         if respuesta.alternativa.strip() == "-"
                         else respuesta.alternativa,
                         "fuente": "omr",
-                        "fechaRegistro": fecha_envio,
+                        #"fechaRegistro": fecha_envio,
                         "activo": True,
                     }
                 )
@@ -1347,10 +1354,33 @@ class MainWindow(QMainWindow):
             return False
 
     def _enviar_respuestas(self, payload: List[dict]) -> int:
-        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums"
-        registrados = 0
+        """
+        Envía las respuestas en lotes por alumno al endpoint Batch:
+        POST /api/EvaluacionRespuestums/Batch
+
+        payload: lista plana de respuestas (una dict por pregunta),
+                tal y como la construye _construir_payload_respuestas.
+        """
+        # Nuevo endpoint batch
+        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/Batch"
+
+        # 1) Agrupamos por dniAlumno (un request por alumno)
+        respuestas_por_alumno: dict[str, list[dict]] = {}
         for item in payload:
-            data = json.dumps(item).encode("utf-8")
+            dni = (item.get("dniAlumno") or "").strip()
+            if not dni:
+                # si por alguna razón viene sin DNI, lo ignoramos o podrías loguearlo
+                continue
+            respuestas_por_alumno.setdefault(dni, []).append(item)
+
+        if not respuestas_por_alumno:
+            return 0
+
+        registrados = 0
+
+        # 2) Mandamos un POST por alumno con la lista completa de sus respuestas
+        for dni, respuestas in respuestas_por_alumno.items():
+            data = json.dumps(respuestas).encode("utf-8")
             try:
                 with urlopen(
                     Request(
@@ -1358,18 +1388,26 @@ class MainWindow(QMainWindow):
                         data=data,
                         headers={"Content-Type": "application/json"},
                     ),
-                    timeout=10,
+                    timeout=30,  # algo más alto que 10s por si el batch es grande
                 ) as response:
                     response.read()
-                registrados += 1
-            except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+
+                # contamos cuántas respuestas se registraron en este lote
+                registrados += len(respuestas)
+
+            except (HTTPError, URLError) as exc:
                 QMessageBox.critical(
                     self,
                     "Error de registro",
-                    f"No se pudo registrar una respuesta (pregunta {item.get('preguntaOrden')}): {exc}",
+                    f"No se pudo registrar las respuestas para el alumno {dni}: {exc}",
                 )
+                # puedes romper aquí o seguir con otros alumnos;
+                # por ahora rompemos para que el usuario vea el error pronto
                 break
+
         return registrados
+
+
 
     def _mostrar_detalle_por_indice(self, index: int) -> None:
         if index < 0 or index >= self.table_students.rowCount():
