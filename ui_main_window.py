@@ -22,6 +22,7 @@ from PyQt6.QtGui import QPixmap, QColor, QImage, QWheelEvent, QMouseEvent, QFont
 from PyQt6.QtWidgets import (
     QAbstractSpinBox,
     QFileDialog,
+    QCheckBox,
     QComboBox,
     QLabel,
     QMainWindow,
@@ -41,6 +42,7 @@ from PyQt6.QtWidgets import (
 )
 
 from models import AlumnoHoja, Respuesta
+import omr_processor
 from omr_processor import OMRConfig, procesar_pdf
 
 
@@ -139,8 +141,12 @@ class MainWindow(QMainWindow):
         self.statusBar().addPermanentWidget(self._progress_bar, 1)
         self._process_thread: QThread | None = None
         self._process_worker: _ProcessWorker | None = None
+        self._audit_root = Path(r"D:\\degubHR")
+        self._original_log_debug = omr_processor._log_debug
+        self._original_debug_file_getter = omr_processor._get_debug_txt_file
 
         self._build_ui()
+        self._apply_audit_preferences(show_message=False)
         self._reset_pdf_state()
         self._load_evaluaciones()
 
@@ -217,6 +223,13 @@ class MainWindow(QMainWindow):
         self.btn_export = QPushButton("Exportar resultados")
         self.btn_register = QPushButton("Registrar respuestas")
 
+        self.audit_checkbox = QCheckBox("Guardar auditoría en D:\\degubHR")
+        self.audit_checkbox.setObjectName("auditToggle")
+        self.audit_checkbox.setChecked(False)
+        self.audit_checkbox.setToolTip(
+            "Activa el guardado de recortes y archivos de auditoría en D:/degubHR"
+        )
+
         self.lbl_file = QLabel("Ningún archivo seleccionado")
         self.lbl_file.setObjectName("fileLabel")
 
@@ -226,6 +239,7 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.btn_process)
         toolbar.addWidget(self.btn_export)
         toolbar.addWidget(self.btn_register)
+        toolbar.addWidget(self.audit_checkbox)
         toolbar.addStretch(1)
         toolbar.addWidget(self.lbl_file)
 
@@ -580,6 +594,26 @@ class MainWindow(QMainWindow):
                 font-size: 8pt;
             }
 
+            QCheckBox#auditToggle {
+                spacing: 6px;
+                font-weight: 600;
+                color: #0f172a;
+            }
+            QCheckBox#auditToggle::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 6px;
+                border: 1px solid #cbd5e1;
+                background-color: #f1f5f9;
+            }
+            QCheckBox#auditToggle::indicator:hover {
+                border-color: #a5b4fc;
+            }
+            QCheckBox#auditToggle::indicator:checked {
+                background-color: #c7d2fe;
+                border: 1px solid #a78bfa;
+            }
+
             QSpinBox#pageSelector {
                 background-color: #e3f2fd;
                 border: 1px solid #c7d2fe;
@@ -599,6 +633,7 @@ class MainWindow(QMainWindow):
         self.btn_process.clicked.connect(self._on_process)
         self.btn_export.clicked.connect(self._on_export)
         self.btn_register.clicked.connect(self._on_register_responses)
+        self.audit_checkbox.toggled.connect(self._on_audit_toggle)
         self.table_students.itemSelectionChanged.connect(self._on_student_selected)
         self.table_not_found.itemSelectionChanged.connect(
             self._on_not_found_selected
@@ -682,6 +717,7 @@ class MainWindow(QMainWindow):
         self._iniciar_procesamiento_async()
 
     def _iniciar_procesamiento_async(self) -> None:
+        self._apply_audit_preferences()
         self._preparar_estado_procesamiento()
 
         self._process_thread = QThread(self)
@@ -794,6 +830,46 @@ class MainWindow(QMainWindow):
         if self._process_thread:
             self._process_thread.deleteLater()
             self._process_thread = None
+
+    def _apply_audit_preferences(self, show_message: bool = True) -> None:
+        """Activa o desactiva el guardado de archivos de auditoría en disco."""
+
+        audit_enabled = self.audit_checkbox.isChecked()
+        if audit_enabled:
+            self.config.dni_region_dir = self._audit_root / "DNi"
+            self.config.respuestas_region_dir = self._audit_root / "Respuestas"
+            self.config.dni_marks_dir = self._audit_root / "DNiMarcas"
+            self.config.respuestas_marks_dir = self._audit_root / "RespuestasMarcas"
+            omr_processor.DEBUG_TXT_ROOT = self._audit_root / "txt"
+            omr_processor._log_debug = self._original_log_debug
+            omr_processor._get_debug_txt_file = self._original_debug_file_getter
+            if show_message:
+                self.statusBar().showMessage(
+                    "Auditoría activada: se guardarán recortes en D:/degubHR",
+                    4000,
+                )
+        else:
+            self.config.dni_region_dir = None
+            self.config.respuestas_region_dir = None
+            self.config.dni_marks_dir = None
+            self.config.respuestas_marks_dir = None
+
+            def _noop_debug_file(_pagina: int) -> Path | None:
+                return None
+
+            def _noop_log_debug(_pagina: int, _text: str) -> None:
+                return None
+
+            omr_processor._get_debug_txt_file = _noop_debug_file
+            omr_processor._log_debug = _noop_log_debug
+            if show_message:
+                self.statusBar().showMessage(
+                    "Auditoría desactivada: no se generarán archivos en D:/degubHR",
+                    4000,
+                )
+
+    def _on_audit_toggle(self, checked: bool) -> None:  # noqa: ARG002
+        self._apply_audit_preferences()
 
     def _on_export(self) -> None:
         if not self.resultados:
