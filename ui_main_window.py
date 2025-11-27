@@ -86,6 +86,13 @@ class MainWindow(QMainWindow):
     MAX_ZOOM = 3.0
     ZOOM_STEP = 0.05
 
+    STUDENT_COL_PAGINA = 0
+    STUDENT_COL_DNI = 1
+    STUDENT_COL_ALUMNO = 2
+    STUDENT_COL_CICLO = 3
+    STUDENT_COL_SECCION = 4
+    STUDENT_COL_ACCION = 5
+
     def __init__(self) -> None:
         super().__init__()
         self.setWindowTitle("Lector OMR")
@@ -241,9 +248,9 @@ class MainWindow(QMainWindow):
         left_layout.setContentsMargins(8, 0, 4, 0)
         left_layout.setSpacing(6)
 
-        self.table_students = QTableWidget(0, 5)
+        self.table_students = QTableWidget(0, 6)
         self.table_students.setHorizontalHeaderLabels(
-            ["Página", "DNI", "Alumno", "Ciclo", "Sección"]
+            ["Página", "DNI", "Alumno", "Ciclo", "Sección", ""]
         )
         self.table_students.setSelectionBehavior(
             QTableWidget.SelectionBehavior.SelectRows
@@ -460,6 +467,19 @@ class MainWindow(QMainWindow):
             }
             QPushButton:pressed {
                 background-color: #8ac3b4;
+            }
+
+            QToolButton#deleteAction {
+                background-color: #ffe4e6;
+                border: 1px solid #fecdd3;
+                border-radius: 6px;
+                padding: 4px;
+            }
+            QToolButton#deleteAction:hover {
+                background-color: #fecdd3;
+            }
+            QToolButton#deleteAction:pressed {
+                background-color: #fda4af;
             }
 
             /* Tablas más limpias */
@@ -1082,15 +1102,32 @@ class MainWindow(QMainWindow):
         for alumno in alumnos:
             row = self.table_students.rowCount()
             self.table_students.insertRow(row)
+            pagina_item = QTableWidgetItem(str(alumno.get("pagina", "")))
+            pagina_item.setData(Qt.ItemDataRole.UserRole, alumno)
+            self.table_students.setItem(row, self.STUDENT_COL_PAGINA, pagina_item)
             self.table_students.setItem(
-                row, 0, QTableWidgetItem(str(alumno.get("pagina", "")))
+                row,
+                self.STUDENT_COL_DNI,
+                QTableWidgetItem(alumno.get("dni", "")),
             )
-            self.table_students.setItem(row, 1, QTableWidgetItem(alumno.get("dni", "")))
             self.table_students.setItem(
-                row, 2, QTableWidgetItem(alumno.get("alumno", ""))
+                row,
+                self.STUDENT_COL_ALUMNO,
+                QTableWidgetItem(alumno.get("alumno", "")),
             )
-            self.table_students.setItem(row, 3, QTableWidgetItem(alumno.get("ciclo", "")))
-            self.table_students.setItem(row, 4, QTableWidgetItem(alumno.get("seccion", "")))
+            self.table_students.setItem(
+                row,
+                self.STUDENT_COL_CICLO,
+                QTableWidgetItem(alumno.get("ciclo", "")),
+            )
+            self.table_students.setItem(
+                row,
+                self.STUDENT_COL_SECCION,
+                QTableWidgetItem(alumno.get("seccion", "")),
+            )
+            self.table_students.setCellWidget(
+                row, self.STUDENT_COL_ACCION, self._crear_boton_eliminar()
+            )
         if alumnos:
             self.table_students.selectRow(0)
 
@@ -1102,6 +1139,16 @@ class MainWindow(QMainWindow):
         elif filtro != self.ALL_SECTIONS_KEY:
             datos = [item for item in self.evaluacion_detalle if item.get("seccion") == filtro]
         self._llenar_tabla_evaluacion(datos)
+
+    def _crear_boton_eliminar(self) -> QToolButton:
+        boton = QToolButton()
+        boton.setObjectName("deleteAction")
+        boton.setAutoRaise(True)
+        boton.setCursor(Qt.CursorShape.PointingHandCursor)
+        boton.setIcon(self.style().standardIcon(QStyle.StandardPixmap.SP_TrashIcon))
+        boton.setToolTip("Eliminar alumno de la tabla")
+        boton.clicked.connect(self._on_student_delete_clicked)
+        return boton
 
     def _reset_resultados(self) -> None:
         self.resultados = []
@@ -1152,6 +1199,73 @@ class MainWindow(QMainWindow):
             self.table_not_found.setItem(row, 0, pagina_item)
             self.table_not_found.setItem(row, 1, dni_item)
         self._sincronizando_no_encontrados = False
+
+    def _on_student_delete_clicked(self) -> None:
+        boton = self.sender()
+        if not isinstance(boton, QToolButton):
+            return
+        fila = self._fila_por_boton(boton)
+        if fila < 0:
+            return
+        self._confirmar_eliminacion_fila(fila)
+
+    def _fila_por_boton(self, boton: QToolButton) -> int:
+        for row in range(self.table_students.rowCount()):
+            if self.table_students.cellWidget(row, self.STUDENT_COL_ACCION) is boton:
+                return row
+        return -1
+
+    def _confirmar_eliminacion_fila(self, fila: int) -> None:
+        pagina_item = self.table_students.item(fila, self.STUDENT_COL_PAGINA)
+        dni_item = self.table_students.item(fila, self.STUDENT_COL_DNI)
+        nombre_item = self.table_students.item(fila, self.STUDENT_COL_ALUMNO)
+
+        dni = (dni_item.text().strip() if dni_item else "") or "(sin DNI)"
+        nombre = (nombre_item.text().strip() if nombre_item else "") or "Alumno"
+        pagina = pagina_item.text().strip() if pagina_item else "-"
+
+        mensaje = (
+            f"Vas a eliminar el registro de {nombre} con DNI {dni}.\n"
+            f"Página asignada: {pagina}.\n\n"
+            "Esta acción no se puede deshacer. ¿Deseas continuar?"
+        )
+
+        decision = QMessageBox.warning(
+            self,
+            "Confirmar eliminación",
+            mensaje,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+
+        if decision != QMessageBox.StandardButton.Yes:
+            return
+
+        self._eliminar_fila_alumno(fila)
+
+    def _eliminar_fila_alumno(self, fila: int) -> None:
+        if fila < 0 or fila >= self.table_students.rowCount():
+            return
+
+        pagina_item = self.table_students.item(fila, self.STUDENT_COL_PAGINA)
+        dni_item = self.table_students.item(fila, self.STUDENT_COL_DNI)
+        alumno_data = pagina_item.data(Qt.ItemDataRole.UserRole) if pagina_item else None
+        dni = dni_item.text().strip() if dni_item else ""
+
+        if alumno_data and alumno_data in self.evaluacion_detalle:
+            try:
+                self.evaluacion_detalle.remove(alumno_data)
+            except ValueError:
+                pass
+
+        if dni and dni in self.resultados_por_dni:
+            self.resultados_por_dni.pop(dni, None)
+
+        self.table_students.removeRow(fila)
+        if self.table_students.rowCount() > 0:
+            self.table_students.selectRow(min(fila, self.table_students.rowCount() - 1))
+        else:
+            self._mostrar_detalle_alumno(None)
 
     def _on_not_found_item_changed(self, item: QTableWidgetItem) -> None:
         if self._sincronizando_no_encontrados:
@@ -1295,13 +1409,13 @@ class MainWindow(QMainWindow):
         color_error = QColor("#fecdd3")
         color_base = self.table_students.palette().base().color()
         for row in range(self.table_students.rowCount()):
-            pagina_item = self.table_students.item(row, 0)
-            dni_item = self.table_students.item(row, 1)
-            nombre_item = self.table_students.item(row, 2)
+            pagina_item = self.table_students.item(row, self.STUDENT_COL_PAGINA)
+            dni_item = self.table_students.item(row, self.STUDENT_COL_DNI)
+            nombre_item = self.table_students.item(row, self.STUDENT_COL_ALUMNO)
 
             fila_valida = True
 
-            for col in range(self.table_students.columnCount()):
+            for col in range(self.STUDENT_COL_ACCION):
                 item = self.table_students.item(row, col)
                 if item:
                     item.setBackground(color_base)
@@ -1315,7 +1429,7 @@ class MainWindow(QMainWindow):
 
             if not fila_valida:
                 valido = False
-                for col in range(self.table_students.columnCount()):
+                for col in range(self.STUDENT_COL_ACCION):
                     item = self.table_students.item(row, col)
                     if item:
                         item.setBackground(color_error)
@@ -1332,9 +1446,15 @@ class MainWindow(QMainWindow):
 
 
         for row in range(self.table_students.rowCount()):
-            dni = (self.table_students.item(row, 1) or QTableWidgetItem(""))
-            nombre = (self.table_students.item(row, 2) or QTableWidgetItem(""))
-            pagina_item = self.table_students.item(row, 0)
+            dni = (
+                self.table_students.item(row, self.STUDENT_COL_DNI)
+                or QTableWidgetItem("")
+            )
+            nombre = (
+                self.table_students.item(row, self.STUDENT_COL_ALUMNO)
+                or QTableWidgetItem("")
+            )
+            pagina_item = self.table_students.item(row, self.STUDENT_COL_PAGINA)
             dni_valor = dni.text().strip()
             nombre_valor = nombre.text().strip()
             pagina_valor = pagina_item.text().strip() if pagina_item else ""
