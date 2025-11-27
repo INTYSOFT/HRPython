@@ -79,7 +79,7 @@ class _ProcessWorker(QObject):
 class MainWindow(QMainWindow):
     """Ventana principal con estilo moderno y paneles divididos."""
 
-    API_BASE = "http://192.168.1.50:5000"
+    API_BASE = "https://api.ceglumbreras.com"
     ALL_SECTIONS_KEY = "__all__"
     PREVIEW_DPI = 300
     MIN_ZOOM = 0.1
