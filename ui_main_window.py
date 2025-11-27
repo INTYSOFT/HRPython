@@ -184,7 +184,7 @@ class MainWindow(QMainWindow):
             self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
         )
         self.btn_refresh_evaluaciones.setToolTip("Recargar evaluaciones")
-        self.btn_refresh_evaluaciones.setIconSize(QSize(20, 20))
+        self.btn_refresh_evaluaciones.setIconSize(QSize(10, 10))
         self.btn_refresh_evaluaciones.setAutoRaise(True)
 
         self.combo_evaluaciones = QComboBox()
@@ -194,9 +194,9 @@ class MainWindow(QMainWindow):
         evaluacion_container = QWidget()
         evaluacion_layout = QVBoxLayout(evaluacion_container)
         evaluacion_layout.setContentsMargins(0, 0, 0, 0)
-        evaluacion_layout.setSpacing(4)
+        evaluacion_layout.setSpacing(1)
         evaluacion_layout.addWidget(
-            self.btn_refresh_evaluaciones, alignment=Qt.AlignmentFlag.AlignHCenter
+            self.btn_refresh_evaluaciones, alignment=Qt.AlignmentFlag.AlignLeft
         )
         evaluacion_layout.addWidget(self.combo_evaluaciones)
 
