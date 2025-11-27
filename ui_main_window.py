@@ -192,12 +192,13 @@ class MainWindow(QMainWindow):
         self.combo_evaluaciones.setMinimumWidth(180)
 
         evaluacion_container = QWidget()
-        evaluacion_layout = QVBoxLayout(evaluacion_container)
+        evaluacion_layout = QHBoxLayout(evaluacion_container)
         evaluacion_layout.setContentsMargins(0, 0, 0, 0)
-        evaluacion_layout.setSpacing(1)
-        evaluacion_layout.addWidget(
-            self.btn_refresh_evaluaciones, alignment=Qt.AlignmentFlag.AlignLeft
+        evaluacion_layout.setSpacing(6)
+        evaluacion_layout.setAlignment(
+            Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
         )
+        evaluacion_layout.addWidget(self.btn_refresh_evaluaciones)
         evaluacion_layout.addWidget(self.combo_evaluaciones)
 
         self.combo_secciones = QComboBox()
