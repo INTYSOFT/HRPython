@@ -178,9 +178,27 @@ class MainWindow(QMainWindow):
         toolbar.setContentsMargins(0, 0, 0, 0)
         toolbar.setSpacing(6)
 
+        self.btn_refresh_evaluaciones = QToolButton()
+        self.btn_refresh_evaluaciones.setObjectName("refreshEvalButton")
+        self.btn_refresh_evaluaciones.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_BrowserReload)
+        )
+        self.btn_refresh_evaluaciones.setToolTip("Recargar evaluaciones")
+        self.btn_refresh_evaluaciones.setIconSize(QSize(20, 20))
+        self.btn_refresh_evaluaciones.setAutoRaise(True)
+
         self.combo_evaluaciones = QComboBox()
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
         self.combo_evaluaciones.setMinimumWidth(180)
+
+        evaluacion_container = QWidget()
+        evaluacion_layout = QVBoxLayout(evaluacion_container)
+        evaluacion_layout.setContentsMargins(0, 0, 0, 0)
+        evaluacion_layout.setSpacing(4)
+        evaluacion_layout.addWidget(
+            self.btn_refresh_evaluaciones, alignment=Qt.AlignmentFlag.AlignHCenter
+        )
+        evaluacion_layout.addWidget(self.combo_evaluaciones)
 
         self.combo_secciones = QComboBox()
         self.combo_secciones.setPlaceholderText("Seleccione sección")
@@ -194,7 +212,7 @@ class MainWindow(QMainWindow):
         self.lbl_file = QLabel("Ningún archivo seleccionado")
         self.lbl_file.setObjectName("fileLabel")
 
-        toolbar.addWidget(self.combo_evaluaciones)
+        toolbar.addWidget(evaluacion_container)
         toolbar.addWidget(self.combo_secciones)
         toolbar.addWidget(self.btn_load)
         toolbar.addWidget(self.btn_process)
@@ -511,6 +529,20 @@ class MainWindow(QMainWindow):
                 border-radius: 8px;
             }
 
+            QToolButton#refreshEvalButton {
+                background-color: #dbeafe;
+                border: 1px solid #bfdbfe;
+                border-radius: 12px;
+                padding: 6px;
+                color: #0f172a;
+            }
+            QToolButton#refreshEvalButton:hover {
+                background-color: #c7d2fe;
+            }
+            QToolButton#refreshEvalButton:pressed {
+                background-color: #a5b4fc;
+            }
+
             QLabel#pageBadge {
                 background-color: #a5b4fc;
                 color: #0f172a;
@@ -550,6 +582,7 @@ class MainWindow(QMainWindow):
         self.table_not_found.itemSelectionChanged.connect(
             self._on_not_found_selected
         )
+        self.btn_refresh_evaluaciones.clicked.connect(self._on_refresh_evaluaciones)
         self.combo_evaluaciones.currentIndexChanged.connect(
             self._on_evaluacion_changed
         )
@@ -780,45 +813,62 @@ class MainWindow(QMainWindow):
         self._mostrar_detalle_alumno(resultado)
 
     # -------------------------------------------------------- evaluaciones API
+    def _on_refresh_evaluaciones(self) -> None:
+        """Fuerza la recarga manual de las evaluaciones disponibles."""
+
+        self.statusBar().showMessage("Recargando evaluaciones...", 2000)
+        self._load_evaluaciones()
+
     def _load_evaluaciones(self, estado_id: int = 2) -> None:
         """Obtiene las evaluaciones desde el API y llena el desplegable."""
 
         self.combo_evaluaciones.clear()
         self.combo_evaluaciones.addItem("Cargando evaluaciones...", None)
+        button_present = hasattr(self, "btn_refresh_evaluaciones")
+        if button_present:
+            self.btn_refresh_evaluaciones.setEnabled(False)
 
         url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionProgramadums/estado/{estado_id}"
         try:
-            with urlopen(
-                Request(url, headers={"Accept": "application/json"}), timeout=10
-            ) as response:
-                raw_data = response.read()
-            payload = json.loads(raw_data)
-        except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
-            self._handle_evaluacion_error(
-                f"No se pudo conectar al servicio de evaluaciones ({exc})."
-            )
-            return
-        except json.JSONDecodeError as exc:  # pragma: no cover - validación de datos
-            self._handle_evaluacion_error(
-                f"Respuesta inválida del servicio de evaluaciones ({exc})."
-            )
-            return
+            try:
+                with urlopen(
+                    Request(url, headers={"Accept": "application/json"}), timeout=10
+                ) as response:
+                    raw_data = response.read()
+                payload = json.loads(raw_data)
+            except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+                self._handle_evaluacion_error(
+                    f"No se pudo conectar al servicio de evaluaciones ({exc})."
+                )
+                return
+            except json.JSONDecodeError as exc:  # pragma: no cover - validación de datos
+                self._handle_evaluacion_error(
+                    f"Respuesta inválida del servicio de evaluaciones ({exc})."
+                )
+                return
 
-        if not isinstance(payload, list):
-            self._handle_evaluacion_error("Formato inesperado al leer evaluaciones.")
-            return
+            if not isinstance(payload, list):
+                self._handle_evaluacion_error(
+                    "Formato inesperado al leer evaluaciones."
+                )
+                return
 
-        self.evaluaciones = self._normalize_evaluaciones(payload)
-        if not self.evaluaciones:
-            self._handle_evaluacion_error("No se encontraron evaluaciones disponibles.")
-            return
+            self.evaluaciones = self._normalize_evaluaciones(payload)
+            if not self.evaluaciones:
+                self._handle_evaluacion_error(
+                    "No se encontraron evaluaciones disponibles."
+                )
+                return
 
-        self.combo_evaluaciones.clear()
-        for evaluacion in self.evaluaciones:
-            display = f"{evaluacion['nombre']} - {evaluacion['fecha_inicio']}"
-            self.combo_evaluaciones.addItem(display, evaluacion)
-        self.statusBar().showMessage("Evaluaciones cargadas", 4000)
-        self._reset_secciones()
+            self.combo_evaluaciones.clear()
+            for evaluacion in self.evaluaciones:
+                display = f"{evaluacion['nombre']} - {evaluacion['fecha_inicio']}"
+                self.combo_evaluaciones.addItem(display, evaluacion)
+            self.statusBar().showMessage("Evaluaciones cargadas", 4000)
+            self._reset_secciones()
+        finally:
+            if button_present:
+                self.btn_refresh_evaluaciones.setEnabled(True)
 
     def _handle_evaluacion_error(self, message: str) -> None:
         self.combo_evaluaciones.clear()
