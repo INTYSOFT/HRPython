@@ -126,15 +126,15 @@ class MainWindow(QMainWindow):
         self._progress_bar.setStyleSheet(
             """
             QProgressBar {
-                background-color: #fee2e2;
-                color: #991b1b;
+                background-color: #fff1f2;
+                color: #7f1d1d;
                 border: 1px solid #fecdd3;
-                border-radius: 10px;
-                padding: 4px;
+                border-radius: 9px;
+                padding: 3px 5px;
             }
             QProgressBar::chunk {
-                background-color: #f87171;
-                border-radius: 8px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f43f5e, stop:1 #e11d48);
+                border-radius: 7px;
             }
             """
         )
@@ -144,6 +144,7 @@ class MainWindow(QMainWindow):
         self._audit_root = Path(r"D:\\degubHR")
         self._original_log_debug = omr_processor._log_debug
         self._original_debug_file_getter = omr_processor._get_debug_txt_file
+        self._brand_logo_path = Path(__file__).parent / "assets" / "logo.png"
 
         self._build_ui()
         self._apply_audit_preferences(show_message=False)
@@ -158,22 +159,29 @@ class MainWindow(QMainWindow):
 
         main_layout = QVBoxLayout(central)
         # top = 0 para que todo quede pegado al borde superior de la ventana
-        main_layout.setContentsMargins(0, 0, 0, 8)
-        main_layout.setSpacing(4)
+        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setSpacing(8)
 
         # ==================================================
         #      ZONA SUPERIOR: TÍTULO + CONTROLES
         # ==================================================
         top_container = QWidget()
+        top_container.setObjectName("topContainer")
         top_layout = QVBoxLayout(top_container)
         # solo un poco de margen lateral y abajo, nada arriba
-        top_layout.setContentsMargins(8, 0, 8, 4)
-        top_layout.setSpacing(2)
+        top_layout.setContentsMargins(10, 10, 10, 8)
+        top_layout.setSpacing(8)
 
         # ------- fila 1: encabezado (logo + título) -------
         header = QHBoxLayout()
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(6)
+        header.setSpacing(8)
+
+        self.brand_logo = QLabel()
+        self.brand_logo.setObjectName("brandLogo")
+        self.brand_logo.setFixedHeight(32)
+        self.brand_logo.setAlignment(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+        self._set_brand_logo_pixmap()
 
         self.logo_badge = QLabel("OMR")
         self.logo_badge.setObjectName("logoBadge")
@@ -182,13 +190,16 @@ class MainWindow(QMainWindow):
         self.title_label = QLabel("SCAN HOJA DE RESPUESTAS")
         self.title_label.setObjectName("titleLabel")
 
+        header.addWidget(self.brand_logo)
         header.addWidget(self.logo_badge)
         header.addWidget(self.title_label)
         header.addStretch(1)
 
         # ------- fila 2: barra de acciones -------
-        toolbar = QHBoxLayout()
-        toolbar.setContentsMargins(0, 0, 0, 0)
+        toolbar_container = QWidget()
+        toolbar_container.setObjectName("toolbarCard")
+        toolbar = QHBoxLayout(toolbar_container)
+        toolbar.setContentsMargins(7, 5, 7, 5)
         toolbar.setSpacing(6)
 
         self.btn_refresh_evaluaciones = QToolButton()
@@ -202,7 +213,7 @@ class MainWindow(QMainWindow):
 
         self.combo_evaluaciones = QComboBox()
         self.combo_evaluaciones.setPlaceholderText("Seleccione evaluación")
-        self.combo_evaluaciones.setMinimumWidth(180)
+        self.combo_evaluaciones.setMinimumWidth(140)
 
         evaluacion_container = QWidget()
         evaluacion_layout = QHBoxLayout(evaluacion_container)
@@ -216,7 +227,7 @@ class MainWindow(QMainWindow):
 
         self.combo_secciones = QComboBox()
         self.combo_secciones.setPlaceholderText("Seleccione sección")
-        self.combo_secciones.setMinimumWidth(180)
+        self.combo_secciones.setMinimumWidth(140)
 
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
@@ -245,7 +256,7 @@ class MainWindow(QMainWindow):
 
         # agregar al contenedor superior
         top_layout.addLayout(header)
-        top_layout.addLayout(toolbar)
+        top_layout.addWidget(toolbar_container)
 
         # contenedor superior primero en el layout principal
         main_layout.addWidget(top_container, 0)
@@ -254,13 +265,14 @@ class MainWindow(QMainWindow):
         #      ZONA CENTRAL: SPLITTER (TABLAS + VISOR)
         # ==================================================
         splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.setHandleWidth(4)
+        splitter.setHandleWidth(5)
 
         # ------------ Panel izquierdo (tablas) ------------
         left_panel = QWidget()
+        left_panel.setObjectName("contentCard")
         left_layout = QVBoxLayout(left_panel)
-        left_layout.setContentsMargins(8, 0, 4, 0)
-        left_layout.setSpacing(6)
+        left_layout.setContentsMargins(10, 10, 10, 10)
+        left_layout.setSpacing(8)
 
         self.table_students = QTableWidget(0, 6)
         self.table_students.setHorizontalHeaderLabels(
@@ -294,7 +306,7 @@ class MainWindow(QMainWindow):
 
         lower_tables = QHBoxLayout()
         lower_tables.setContentsMargins(0, 0, 0, 0)
-        lower_tables.setSpacing(6)
+        lower_tables.setSpacing(8)
         lower_tables.addWidget(self.table_not_found, stretch=1)
         lower_tables.addWidget(self.table_answers, stretch=2)
 
@@ -305,22 +317,23 @@ class MainWindow(QMainWindow):
 
         # ------------ Panel derecho (visor PDF) -----------
         right_panel = QWidget()
+        right_panel.setObjectName("contentCard")
         right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(4, 0, 8, 0)
-        right_layout.setSpacing(4)
+        right_layout.setContentsMargins(10, 10, 10, 10)
+        right_layout.setSpacing(8)
 
         icon_size_small = QSize(10, 10)
 
         # botones de zoom
         self.btn_zoom_out = QToolButton()
-        self.btn_zoom_out.setText("−")
+        self.btn_zoom_out.setText("-")
         self.btn_zoom_out.setToolTip("Disminuir zoom")
         self.btn_zoom_out.setObjectName("zoomToolButton")
         self.btn_zoom_out.setAutoRaise(True)
         self.btn_zoom_out.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextOnly)
 
         font = self.btn_zoom_out.font()
-        font.setPointSize(10)
+        font.setPointSize(9)
         font.setBold(True)
         self.btn_zoom_out.setFont(font)
 
@@ -363,24 +376,28 @@ class MainWindow(QMainWindow):
         self.page_selector = QSpinBox()
         self.page_selector.setRange(1, 1)
         self.page_selector.setButtonSymbols(QAbstractSpinBox.ButtonSymbols.NoButtons)
-        self.page_selector.setMinimumWidth(60)
+        self.page_selector.setMinimumWidth(50)
         self.page_selector.setObjectName("pageSelector")
         self.page_selector.setVisible(False)
 
         self.lbl_page_info = QLabel("Página 0 / 0")
+        self.lbl_page_info.setObjectName("pageInfo")
         self.lbl_current_page = QLabel("0")
         self.lbl_current_page.setObjectName("pageBadge")
         self.lbl_total_pages = QLabel("0")
         self.lbl_total_pages.setObjectName("pageTotal")
         self.lbl_zoom_info = QLabel("100 %")
+        self.lbl_zoom_info.setObjectName("pageInfo")
 
         # visor de imagen / pdf
         self.image_label = QLabel("Seleccione un alumno")
+        self.image_label.setObjectName("imageViewer")
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.image_label.setMinimumHeight(350)
+        self.image_label.setMinimumHeight(320)
         self.image_label.setMouseTracking(True)
 
         image_scroll = QScrollArea()
+        image_scroll.setObjectName("imageScroll")
         image_scroll.setWidget(self.image_label)
         image_scroll.setWidgetResizable(True)
         self.image_scroll = image_scroll
@@ -391,9 +408,9 @@ class MainWindow(QMainWindow):
         nav_panel = QWidget()
         nav_panel.setObjectName("navPanel")
         nav_layout = QVBoxLayout(nav_panel)
-        nav_layout.setContentsMargins(8, 8, 8, 8)
-        nav_layout.setSpacing(6)
-        nav_panel.setFixedWidth(44)
+        nav_layout.setContentsMargins(10, 12, 10, 12)
+        nav_layout.setSpacing(8)
+        nav_panel.setFixedWidth(42)
         nav_layout.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignHCenter)
 
         nav_layout.addWidget(self.lbl_current_page, alignment=Qt.AlignmentFlag.AlignHCenter)
@@ -409,11 +426,13 @@ class MainWindow(QMainWindow):
 
         viewer_layout = QHBoxLayout()
         viewer_layout.setContentsMargins(0, 0, 0, 0)
-        viewer_layout.setSpacing(6)
+        viewer_layout.setSpacing(8)
         viewer_layout.addWidget(image_scroll, stretch=1)
         viewer_layout.addWidget(nav_panel, stretch=0)
 
         info_bar = QHBoxLayout()
+        info_bar.setContentsMargins(5, 3, 5, 3)
+        info_bar.setSpacing(6)
         info_bar.addWidget(self.page_selector)
         info_bar.addWidget(self.lbl_page_info)
         info_bar.addStretch(1)
@@ -438,190 +457,306 @@ class MainWindow(QMainWindow):
         self._connect_signals()
 
 
+    def _set_brand_logo_pixmap(self) -> None:
+        """Carga el logo de marca si existe; muestra texto si falta el archivo."""
+
+        pixmap = QPixmap()
+        if self._brand_logo_path.exists():
+            pixmap = QPixmap(str(self._brand_logo_path))
+        if not pixmap.isNull():
+            scaled = pixmap.scaledToHeight(
+                self.brand_logo.height(),
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            self.brand_logo.setPixmap(scaled)
+        else:
+            self.brand_logo.setText("GLUMBRERAS")
+            self.brand_logo.setAlignment(
+                Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft
+            )
+            font = self.brand_logo.font()
+            font.setBold(True)
+            font.setPointSize(max(7, font.pointSize() - 1))
+            self.brand_logo.setFont(font)
+
     def _apply_styles(self) -> None:
         self.setStyleSheet(
             """
+            QMainWindow {
+                background-color: #7f1d1d;
+            }
+
             QWidget {
-                background-color: #f8fafc;
+                background-color: #fff7f7;
                 font-family: 'Segoe UI', 'Open Sans', sans-serif;
-                font-size: 9pt;
-                color: #1f2933;
+                font-size: 7.8pt;
+                color: #7f1d1d;
+            }
+
+            QWidget#topContainer {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #fff1f2, stop:1 #ffe4e6);
+                border: 1px solid #f9c6cd;
+                border-radius: 12px;
+                padding: 7px 9px 9px 9px;
+            }
+
+            QWidget#toolbarCard {
+                background-color: #fff;
+                border: 1px solid #f9c6cd;
+                border-radius: 9px;
+                padding: 5px 6px;
+            }
+
+            QWidget#contentCard {
+                background-color: #fff;
+                border: 1px solid #f8c2c8;
+                border-radius: 9px;
+                padding: 6px;
+            }
+
+            QLabel#brandLogo {
+                padding-right: 6px;
             }
 
             QLabel#titleLabel {
-                font-size: 16pt;
-                font-weight: 700;
-                color: #0f172a;
+                font-size: 13pt;
+                font-weight: 800;
+                color: #b91c1c;
                 letter-spacing: 0.5px;
             }
 
             QLabel#logoBadge {
-                min-width: 44px;
-                min-height: 44px;
-                max-width: 44px;
-                max-height: 44px;
-                border-radius: 22px;
-                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #c7d2fe, stop:1 #b8e0d2);
-                color: #0f172a;
+                min-width: 32px;
+                min-height: 32px;
+                max-width: 32px;
+                max-height: 32px;
+                border-radius: 16px;
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:1, stop:0 #f87171, stop:1 #ef4444);
+                color: #fff;
                 font-weight: 800;
-                font-size: 12pt;
-                border: 1px solid #dbeafe;
-            }
-
-            /* Botones principales más compactos */
-            QPushButton {
-                background-color: #b8e0d2;
-                padding: 4px 10px;             /* antes 10px 18px */
-                border-radius: 6px;            /* antes 10px */
-                border: 1px solid #a1d2c5;
-                font-weight: 600;
-            }
-            QPushButton:hover {
-                background-color: #a5d6c9;
-            }
-            QPushButton:pressed {
-                background-color: #8ac3b4;
-            }
-
-            QToolButton#deleteAction {
-                background-color: #ffe4e6;
-                border: 1px solid #fecdd3;
-                border-radius: 6px;
-                padding: 4px;
-            }
-            QToolButton#deleteAction:hover {
-                background-color: #fecdd3;
-            }
-            QToolButton#deleteAction:pressed {
-                background-color: #fda4af;
-            }
-
-            /* Tablas más limpias */
-            QTableWidget {
-                background-color: #ffffff;
-                border: 1px solid #dfe7ef;
-                border-radius: 6px;            /* antes 12px */
-                gridline-color: #d0d9e2;
-                selection-background-color: #e4d7ff;
-                selection-color: #111827;
-                alternate-background-color: #f4f7fb;
-            }
-            QHeaderView::section {
-                background-color: #e5edf5;
-                border: none;
-                padding: 4px 6px;              /* antes 8px */
-                font-weight: 600;
-                font-size: 8pt;
-                color: #0f172a;
+                font-size: 9.5pt;
+                border: 1px solid #fca5a5;
             }
 
             QLabel#fileLabel {
-                color: #4b5563;
-                font-size: 8pt;
+                color: #7f1d1d;
+                font-size: 7.4pt;
+                padding: 3px 6px;
+                background: #fff1f2;
+                border: 1px solid #fecdd3;
+                border-radius: 6px;
             }
 
-            QScrollArea {
-                border: none;
+            QPushButton {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #f43f5e, stop:1 #e11d48);
+                color: #fffaf0;
+                padding: 4px 8px;
+                border-radius: 6px;
+                border: 1px solid #fb7185;
+                font-weight: 700;
+                min-height: 20px;
+            }
+            QPushButton:hover {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #fb7185, stop:1 #f43f5e);
+            }
+            QPushButton:pressed {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 #dc2626, stop:1 #b91c1c);
+                color: #fff4f4;
+            }
+            QPushButton:disabled {
+                background: #fee2e2;
+                color: #b91c1c;
+                border-color: #fbd5d5;
             }
 
-            /* Combos más pequeños */
             QComboBox {
-                padding: 4px 8px;              /* antes 8px 12px */
-                border-radius: 6px;            /* antes 10px */
-                border: 1px solid #cfd8e3;
-                background-color: #ffffff;
-                min-height: 24px;
+                padding: 3px 6px;
+                border-radius: 6px;
+                border: 1px solid #fecdd3;
+                background-color: #fff;
+                min-height: 18px;
             }
             QComboBox:focus {
-                border-color: #4ade80;
+                border-color: #f87171;
+                background-color: #fff5f5;
             }
             QComboBox QListView {
-                background-color: #ffffff;
+                background-color: #fff;
                 padding: 2px 0;
             }
 
-            QSplitter::handle {
-                background-color: #e1e7ef;
+            QToolButton#refreshEvalButton {
+                background: #fff1f2;
+                border: 1px solid #fecdd3;
+                border-radius: 9px;
+                padding: 3px;
+                color: #b91c1c;
+            }
+            QToolButton#refreshEvalButton:hover {
+                background: #ffe4e6;
+            }
+            QToolButton#refreshEvalButton:pressed {
+                background: #fecdd3;
             }
 
-            /* Panel lateral de navegación */
             QWidget#navPanel {
-                background-color: #e3f2fd;
-                border-radius: 12px;
+                background: qlineargradient(x1:0, y1:0, x2:0, y2:1, stop:0 #fff1f2, stop:1 #ffe4e6);
+                border-radius: 10px;
+                border: 1px solid #f8c2c8;
             }
             QToolButton#navToolButton,
             QToolButton#zoomToolButton,
             QToolButton#resetZoomToolButton {
-                background-color: transparent;
-                border: none;
-                color: #1f2937;
-                padding: 4px;
+                background-color: #fff;
+                border: 1px solid #fecdd3;
+                border-radius: 6px;
+                color: #7f1d1d;
+                padding: 3px;
+                min-width: 16px;
             }
             QToolButton#navToolButton:hover,
             QToolButton#zoomToolButton:hover,
             QToolButton#resetZoomToolButton:hover {
-                background-color: rgba(31, 41, 55, 0.08);
-                border-radius: 8px;
+                background-color: #fff1f2;
+                border-color: #fb7185;
             }
 
-            QToolButton#refreshEvalButton {
-                background-color: #dbeafe;
-                border: 1px solid #bfdbfe;
-                border-radius: 12px;
-                padding: 6px;
-                color: #0f172a;
+            QToolButton#deleteAction {
+                background-color: #fff1f2;
+                border: 1px solid #fecdd3;
+                border-radius: 5px;
+                padding: 3px;
             }
-            QToolButton#refreshEvalButton:hover {
-                background-color: #c7d2fe;
+            QToolButton#deleteAction:hover {
+                background-color: #ffe4e6;
             }
-            QToolButton#refreshEvalButton:pressed {
-                background-color: #a5b4fc;
+            QToolButton#deleteAction:pressed {
+                background-color: #fecdd3;
             }
 
             QLabel#pageBadge {
-                background-color: #a5b4fc;
-                color: #0f172a;
-                border-radius: 6px;
-                padding: 3px 6px;
-                min-width: 26px;
+                background-color: #b91c1c;
+                color: #fffaf0;
+                border-radius: 5px;
+                padding: 2px 4px;
+                min-width: 18px;
                 qproperty-alignment: AlignCenter;
-                font-weight: 600;
-                font-size: 8pt;
+                font-weight: 700;
+                font-size: 7pt;
             }
             QLabel#pageTotal {
-                color: #1f2937;
+                color: #7f1d1d;
                 qproperty-alignment: AlignCenter;
-                font-size: 8pt;
+                font-size: 7pt;
+                font-weight: 600;
+            }
+            QLabel#pageInfo {
+                color: #7f1d1d;
+                font-weight: 600;
+                letter-spacing: 0.12px;
+            }
+
+            QLabel#imageViewer {
+                background: #fff5f5;
+                border: 1px dashed #fecdd3;
+                border-radius: 10px;
+                color: #b91c1c;
+                letter-spacing: 0.2px;
+            }
+            QScrollArea#imageScroll {
+                border: none;
+                background: transparent;
+            }
+
+            /* Tablas */
+            QTableWidget {
+                background-color: #fff;
+                border: 1px solid #fecdd3;
+                border-radius: 8px;
+                gridline-color: #f8c2c8;
+                selection-background-color: #ffe4e6;
+                selection-color: #7f1d1d;
+                alternate-background-color: #fff7f7;
+            }
+            QTableWidget::item {
+                padding: 3px 5px;
+            }
+            QHeaderView::section {
+                background-color: #ffe4e6;
+                border: none;
+                border-bottom: 1px solid #fecdd3;
+                padding: 4px 5px;
+                font-weight: 700;
+                font-size: 7pt;
+                color: #7f1d1d;
             }
 
             QCheckBox#auditToggle {
-                spacing: 6px;
-                font-weight: 600;
-                color: #0f172a;
+                spacing: 4px;
+                font-weight: 700;
+                color: #7f1d1d;
             }
             QCheckBox#auditToggle::indicator {
-                width: 18px;
-                height: 18px;
-                border-radius: 6px;
-                border: 1px solid #cbd5e1;
-                background-color: #f1f5f9;
+                width: 12px;
+                height: 12px;
+                border-radius: 4px;
+                border: 1px solid #fecdd3;
+                background-color: #fff5f5;
             }
             QCheckBox#auditToggle::indicator:hover {
-                border-color: #a5b4fc;
+                border-color: #fb7185;
             }
             QCheckBox#auditToggle::indicator:checked {
-                background-color: #c7d2fe;
-                border: 1px solid #a78bfa;
+                background-color: #fca5a5;
+                border: 1px solid #ef4444;
             }
 
             QSpinBox#pageSelector {
-                background-color: #e3f2fd;
-                border: 1px solid #c7d2fe;
-                border-radius: 6px;
-                color: #111827;
-                padding: 3px 6px;
-                min-height: 22px;
-                font-size: 8pt;
+                background-color: #fff8f8;
+                border: 1px solid #fecdd3;
+                border-radius: 5px;
+                color: #7f1d1d;
+                padding: 2px 5px;
+                min-height: 17px;
+                font-size: 7.5pt;
+                font-weight: 600;
+            }
+
+            QSplitter::handle {
+                background-color: #f5b5bd;
+            }
+
+            QStatusBar {
+                background: #fff1f2;
+                border-top: 1px solid #fecdd3;
+                color: #7f1d1d;
+            }
+
+            QScrollBar:vertical {
+                background: transparent;
+                width: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:vertical {
+                background: #fca5a5;
+                min-height: 20px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background: #ef4444;
+            }
+            QScrollBar:horizontal {
+                background: transparent;
+                height: 6px;
+                margin: 2px;
+            }
+            QScrollBar::handle:horizontal {
+                background: #fca5a5;
+                min-width: 20px;
+                border-radius: 3px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background: #ef4444;
             }
             """
         )

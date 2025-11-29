@@ -18,7 +18,7 @@ def main() -> None:
     # Fuente global un poco más pequeña
     font = app.font()
     font.setFamily("Segoe UI")          # o "Roboto", "Open Sans", etc. si los tienes
-    font.setPointSize(9)               # antes suele ser 10–11
+    font.setPointSize(8)               # antes suele ser 10–11
     app.setFont(font)
 
     window = MainWindow()
