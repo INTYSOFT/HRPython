@@ -50,6 +50,7 @@ class _ProcessWorker(QObject):
     finished = pyqtSignal(list)
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
+    page_progress = pyqtSignal(int, int)
 
     def __init__(self, pdf_path: Path, cache_dir: Path, config: OMRConfig) -> None:
         super().__init__()
@@ -62,9 +63,11 @@ class _ProcessWorker(QObject):
             def _progress_wrapper(current: int, total: int) -> None:
                 if total <= 0:
                     self.progress.emit(0)
+                    self.page_progress.emit(current, total)
                     return
                 porcentaje = int(max(0, min(100, (current * 100) / total)))
                 self.progress.emit(porcentaje)
+                self.page_progress.emit(current, total)
 
             resultados = procesar_pdf(
                 self.pdf_path,
@@ -81,7 +84,11 @@ class _ProcessWorker(QObject):
 class MainWindow(QMainWindow):
     """Ventana principal con estilo moderno y paneles divididos."""
 
-    API_BASE = "https://api.ceglumbreras.com"
+    #API_BASE = "https://api.ceglumbreras.com"
+
+    API_BASE = "http://192.168.1.50:5000"
+
+    
     ALL_SECTIONS_KEY = "__all__"
     PREVIEW_DPI = 300
     MIN_ZOOM = 0.1
@@ -144,7 +151,7 @@ class MainWindow(QMainWindow):
         self._audit_root = Path(r"D:\\degubHR")
         self._original_log_debug = omr_processor._log_debug
         self._original_debug_file_getter = omr_processor._get_debug_txt_file
-        self._brand_logo_path = Path(__file__).parent / "assets" / "logo.png"
+        self._brand_logo_path = Path(__file__).parent / "mi_app" / "assets" / "logo.png"
 
         self._build_ui()
         self._apply_audit_preferences(show_message=False)
@@ -464,11 +471,13 @@ class MainWindow(QMainWindow):
         if self._brand_logo_path.exists():
             pixmap = QPixmap(str(self._brand_logo_path))
         if not pixmap.isNull():
+            height = 40  # prueba con 100, 120, 150, etc.
             scaled = pixmap.scaledToHeight(
-                self.brand_logo.height(),
+                height,
                 Qt.TransformationMode.SmoothTransformation,
             )
             self.brand_logo.setPixmap(scaled)
+            self.brand_logo.setFixedHeight(height)
         else:
             self.brand_logo.setText("GLUMBRERAS")
             self.brand_logo.setAlignment(
@@ -865,6 +874,7 @@ class MainWindow(QMainWindow):
         self._process_worker.finished.connect(self._process_thread.quit)
         self._process_worker.error.connect(self._process_thread.quit)
         self._process_worker.progress.connect(self._update_progress)
+        self._process_worker.page_progress.connect(self._update_processing_page)
         self._process_worker.finished.connect(self._on_process_completed)
         self._process_worker.error.connect(self._on_process_failed)
         self._process_thread.finished.connect(self._limpiar_hilo_proceso)
@@ -952,6 +962,15 @@ class MainWindow(QMainWindow):
         if not self._progress_bar.isVisible():
             self._progress_bar.setVisible(True)
         self.statusBar().showMessage(f"Procesando... {clamped_value}%", 0)
+
+    def _update_processing_page(self, current: int, total: int) -> None:
+        """Muestra en el visor la p��gina del PDF que se est�� procesando."""
+
+        if not self._pdf_doc or current <= 0:
+            return
+        # El callback entrega current en base 1, lo ajustamos al rango disponible.
+        page = max(1, min(current, self._pdf_doc.page_count))
+        self._mostrar_pagina_pdf(page)
 
     def _finalizar_estado_procesamiento(self) -> None:
         self._toggle_controls(True)
