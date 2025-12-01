@@ -41,6 +41,7 @@ from PyQt6.QtWidgets import (
     QToolButton,
 )
 
+from login_dialog import AuthSession
 from models import AlumnoHoja, Respuesta
 import omr_processor
 from omr_processor import OMRConfig, procesar_pdf
@@ -102,10 +103,13 @@ class MainWindow(QMainWindow):
     STUDENT_COL_SECCION = 4
     STUDENT_COL_ACCION = 5
 
-    def __init__(self) -> None:
+    def __init__(self, auth_session: AuthSession | None = None) -> None:
         super().__init__()
         self.setWindowTitle("Lector OMR")
         self.resize(1400, 800)
+        self.api_base = (auth_session.api_base if auth_session else self.API_BASE).rstrip("/")
+        self._auth_token = auth_session.token if auth_session else None
+        self._token_expiration = auth_session.expiration if auth_session else None
         self.pdf_path: Path | None = None
         self.cache_dir = Path(tempfile.mkdtemp(prefix="omr_cache_"))
         self.resultados: List[AlumnoHoja] = []
@@ -157,6 +161,46 @@ class MainWindow(QMainWindow):
         self._apply_audit_preferences(show_message=False)
         self._reset_pdf_state()
         self._load_evaluaciones()
+
+    # ------------------------------------------------------------------ HTTP helpers
+    def _make_request(
+        self,
+        url: str,
+        method: str = "GET",
+        *,
+        data: bytes | None = None,
+        json_payload: dict | None = None,
+        headers: Optional[Dict[str, str]] = None,
+        accept_json: bool = True,
+    ) -> Request:
+        """
+        Construye una Request agregando el header Bearer si hay sesión activa.
+        Centraliza el uso de Content-Type/Accept.
+        """
+
+        final_headers: Dict[str, str] = {}
+        if accept_json:
+            final_headers["Accept"] = "application/json"
+        if headers:
+            final_headers.update(headers)
+        if json_payload is not None:
+            data = json.dumps(json_payload).encode("utf-8")
+            final_headers["Content-Type"] = "application/json"
+        if self._auth_token:
+            final_headers.setdefault("Authorization", f"Bearer {self._auth_token}")
+        return Request(url, data=data, method=method, headers=final_headers)
+
+    def _handle_auth_error(self, exc: HTTPError, context: str) -> bool:
+        """Devuelve True si el error fue de autenticación y ya fue comunicado."""
+
+        if exc.code == 401:
+            QMessageBox.warning(
+                self,
+                "Sesión expirada",
+                f"Tu sesión ya no es válida al {context}. Por favor vuelve a iniciar sesión.",
+            )
+            return True
+        return False
 
     # ------------------------------------------------------------------ UI
     def _build_ui(self) -> None:
@@ -1079,15 +1123,18 @@ class MainWindow(QMainWindow):
         if button_present:
             self.btn_refresh_evaluaciones.setEnabled(False)
 
-        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionProgramadums/estado/{estado_id}"
+        url = f"{self.api_base.rstrip('/')}/api/EvaluacionProgramadums/estado/{estado_id}"
         try:
             try:
-                with urlopen(
-                    Request(url, headers={"Accept": "application/json"}), timeout=10
-                ) as response:
+                request = self._make_request(url)
+                with urlopen(request, timeout=10) as response:
                     raw_data = response.read()
                 payload = json.loads(raw_data)
             except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+                if isinstance(exc, HTTPError) and self._handle_auth_error(
+                    exc, "recargar evaluaciones"
+                ):
+                    return
                 self._handle_evaluacion_error(
                     f"No se pudo conectar al servicio de evaluaciones ({exc})."
                 )
@@ -1189,19 +1236,22 @@ class MainWindow(QMainWindow):
     def _consultar_evaluacion_programada(self, evaluacion_programada_id: int) -> None:
         """Consulta el API por alumnos asociados a la evaluación seleccionada."""
 
-        url = f"{self.API_BASE.rstrip('/')}/consulta/evaluaciones-programadas/{evaluacion_programada_id}"
+        url = f"{self.api_base.rstrip('/')}/consulta/evaluaciones-programadas/{evaluacion_programada_id}"
         #mostrar mensaje url
         self.statusBar().showMessage(f"Consultando: {url}", 0)
         
 
 
         try:
-            with urlopen(
-                Request(url, headers={"Accept": "application/json"}), timeout=10
-            ) as response:
+            request = self._make_request(url)
+            with urlopen(request, timeout=10) as response:
                 raw_data = response.read()
             payload = json.loads(raw_data)
         except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+            if isinstance(exc, HTTPError) and self._handle_auth_error(
+                exc, "consultar la evaluación seleccionada"
+            ):
+                return
             self._handle_detalle_error(
                 f"No se pudo consultar la evaluación seleccionada ({exc})."
             )
@@ -1756,12 +1806,15 @@ class MainWindow(QMainWindow):
         return payload, advertencias, alumnos_incluidos
 
     def _existen_respuestas_previas(self, evaluacion_programada_id: int) -> Optional[bool]:
-        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/ByEvaluacionProgramada/{evaluacion_programada_id}"
+        url = f"{self.api_base.rstrip('/')}/api/EvaluacionRespuestums/ByEvaluacionProgramada/{evaluacion_programada_id}"
         try:
-            with urlopen(Request(url, headers={"Accept": "application/json"}), timeout=10) as response:
+            request = self._make_request(url)
+            with urlopen(request, timeout=10) as response:
                 response.read()
             return True
         except HTTPError as exc:  # pragma: no cover - interacción remota
+            if self._handle_auth_error(exc, "verificar respuestas previas"):
+                return None
             if exc.code == 404:
                 return False
             QMessageBox.critical(
@@ -1778,12 +1831,17 @@ class MainWindow(QMainWindow):
         return None
 
     def _eliminar_respuestas_previas(self, evaluacion_programada_id: int) -> bool:
-        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/ByEvaluacionProgramada/{evaluacion_programada_id}"
+        url = f"{self.api_base.rstrip('/')}/api/EvaluacionRespuestums/ByEvaluacionProgramada/{evaluacion_programada_id}"
         try:
-            with urlopen(Request(url, method="DELETE"), timeout=10) as response:
+            request = self._make_request(url, method="DELETE", accept_json=False)
+            with urlopen(request, timeout=10) as response:
                 response.read()
             return True
         except (HTTPError, URLError) as exc:  # pragma: no cover - interacción remota
+            if isinstance(exc, HTTPError) and self._handle_auth_error(
+                exc, "eliminar respuestas previas"
+            ):
+                return False
             QMessageBox.critical(
                 self,
                 "Error eliminando",
@@ -1800,7 +1858,7 @@ class MainWindow(QMainWindow):
                 tal y como la construye _construir_payload_respuestas.
         """
         # Nuevo endpoint batch
-        url = f"{self.API_BASE.rstrip('/')}/api/EvaluacionRespuestums/Batch"
+        url = f"{self.api_base.rstrip('/')}/api/EvaluacionRespuestums/Batch"
 
         # 1) Agrupamos por dniAlumno (un request por alumno)
         respuestas_por_alumno: dict[str, list[dict]] = {}
@@ -1820,20 +1878,24 @@ class MainWindow(QMainWindow):
         for dni, respuestas in respuestas_por_alumno.items():
             data = json.dumps(respuestas).encode("utf-8")
             try:
-                with urlopen(
-                    Request(
-                        url,
-                        data=data,
-                        headers={"Content-Type": "application/json"},
-                    ),
-                    timeout=30,  # algo más alto que 10s por si el batch es grande
-                ) as response:
+                request = self._make_request(
+                    url,
+                    method="POST",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    accept_json=False,
+                )
+                with urlopen(request, timeout=30) as response:
                     response.read()
 
                 # contamos cuántas respuestas se registraron en este lote
                 registrados += len(respuestas)
 
             except (HTTPError, URLError) as exc:
+                if isinstance(exc, HTTPError) and self._handle_auth_error(
+                    exc, "registrar respuestas"
+                ):
+                    break
                 QMessageBox.critical(
                     self,
                     "Error de registro",
@@ -1849,17 +1911,21 @@ class MainWindow(QMainWindow):
         self, evaluacion_programada_id: int, seccion_id: int
     ) -> bool:
         url = (
-            f"{self.API_BASE.rstrip('/')}/api/EvaluacionNotaus/consolidar"
+            f"{self.api_base.rstrip('/')}/api/EvaluacionNotaus/consolidar"
             f"?evaluacionProgramadaId={evaluacion_programada_id}&seccionId={seccion_id}"
         )
         try:
-            with urlopen(
-                Request(url, method="POST", headers={"Accept": "application/json"}),
-                timeout=30,
-            ) as response:
+            request = self._make_request(
+                url,
+                method="POST",
+                headers={"Accept": "application/json"},
+            )
+            with urlopen(request, timeout=30) as response:
                 response.read()
             return True
         except HTTPError as exc:  # pragma: no cover - interacción remota
+            if self._handle_auth_error(exc, "consolidar la evaluación"):
+                return False
             QMessageBox.warning(
                 self,
                 "Consolidación incompleta",
