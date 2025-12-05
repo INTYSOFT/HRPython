@@ -16,7 +16,6 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import fitz  # PyMuPDF
-import pandas as pd
 from PyQt6.QtCore import QEvent, QPoint, QSize, Qt, QThread, pyqtSignal, QObject
 from PyQt6.QtGui import QPixmap, QColor, QImage, QWheelEvent, QMouseEvent, QFont
 from PyQt6.QtWidgets import (
@@ -289,7 +288,6 @@ class MainWindow(QMainWindow):
 
         self.btn_load = QPushButton("Cargar PDF")
         self.btn_process = QPushButton("Procesar")
-        self.btn_export = QPushButton("Exportar resultados")
         self.btn_register = QPushButton("Registrar respuestas")
 
         self.audit_checkbox = QCheckBox("Guardar auditoría en D:\\degubHR")
@@ -306,7 +304,6 @@ class MainWindow(QMainWindow):
         toolbar.addWidget(self.combo_secciones)
         toolbar.addWidget(self.btn_load)
         toolbar.addWidget(self.btn_process)
-        toolbar.addWidget(self.btn_export)
         toolbar.addWidget(self.btn_register)
         toolbar.addWidget(self.audit_checkbox)
         toolbar.addStretch(1)
@@ -882,7 +879,6 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.btn_load.clicked.connect(self._on_load_pdf)
         self.btn_process.clicked.connect(self._on_process)
-        self.btn_export.clicked.connect(self._on_export)
         self.btn_register.clicked.connect(self._on_register_responses)
         self.audit_checkbox.toggled.connect(self._on_audit_toggle)
         self.table_students.itemSelectionChanged.connect(self._on_student_selected)
@@ -1013,7 +1009,6 @@ class MainWindow(QMainWindow):
         for widget in (
             self.btn_load,
             self.btn_process,
-            self.btn_export,
             self.btn_register,
             self.combo_evaluaciones,
             self.combo_secciones,
@@ -1141,22 +1136,6 @@ class MainWindow(QMainWindow):
 
     def _on_audit_toggle(self, checked: bool) -> None:  # noqa: ARG002
         self._apply_audit_preferences()
-
-    def _on_export(self) -> None:
-        if not self.resultados:
-            QMessageBox.information(self, "Sin datos", "Procese un PDF antes de exportar.")
-            return
-
-        save_name, _ = QFileDialog.getSaveFileName(
-            self, "Guardar resultados", "resultados.csv", "CSV (*.csv)"
-        )
-        if not save_name:
-            return
-
-        registros = [registro for alumno in self.resultados for registro in alumno.to_records()]
-        df = pd.DataFrame(registros)
-        df.to_csv(save_name, index=False)
-        QMessageBox.information(self, "Exportado", f"Archivo guardado en {save_name}")
 
     def _on_student_selected(self) -> None:
         if self._syncing_selection:
