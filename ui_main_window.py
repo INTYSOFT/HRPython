@@ -51,6 +51,7 @@ class _ProcessWorker(QObject):
     error = pyqtSignal(str)
     progress = pyqtSignal(int)
     page_progress = pyqtSignal(int, int)
+    partial_result = pyqtSignal(object)
 
     def __init__(self, pdf_path: Path, cache_dir: Path, config: OMRConfig) -> None:
         super().__init__()
@@ -69,11 +70,15 @@ class _ProcessWorker(QObject):
                 self.progress.emit(porcentaje)
                 self.page_progress.emit(current, total)
 
+            def _result_wrapper(resultado: AlumnoHoja, _acumulados: list[AlumnoHoja]) -> None:
+                self.partial_result.emit(resultado)
+
             resultados = procesar_pdf(
                 self.pdf_path,
                 self.cache_dir,
                 self.config,
                 progress_callback=_progress_wrapper,
+                result_callback=_result_wrapper,
             )
         except Exception as exc:  # pragma: no cover - mostrado en UI
             self.error.emit(str(exc))
@@ -968,6 +973,7 @@ class MainWindow(QMainWindow):
 
     def _iniciar_procesamiento_async(self) -> None:
         self._apply_audit_preferences()
+        self._reset_resultados()
         self._preparar_estado_procesamiento()
 
         self._process_thread = QThread(self)
@@ -981,6 +987,7 @@ class MainWindow(QMainWindow):
         self._process_worker.error.connect(self._process_thread.quit)
         self._process_worker.progress.connect(self._update_progress)
         self._process_worker.page_progress.connect(self._update_processing_page)
+        self._process_worker.partial_result.connect(self._on_partial_result)
         self._process_worker.finished.connect(self._on_process_completed)
         self._process_worker.error.connect(self._on_process_failed)
         self._process_thread.finished.connect(self._limpiar_hilo_proceso)
@@ -1160,6 +1167,11 @@ class MainWindow(QMainWindow):
     def _on_missing_next(self) -> None:
         self._go_to_missing_row(1)
 
+    def _on_partial_result(self, resultado: AlumnoHoja) -> None:
+        if resultado is None:
+            return
+        self._integrar_resultado_incremental(resultado)
+
     def _calculate_missing_page_rows(self) -> List[int]:
         missing: List[int] = []
         for row in range(self.table_students.rowCount()):
@@ -1224,6 +1236,117 @@ class MainWindow(QMainWindow):
         target_row = self._missing_page_rows[self._missing_nav_index]
         self._select_student_row(target_row)
         self._refresh_missing_page_nav(selected_row=target_row)
+
+    def _integrar_resultado_incremental(self, resultado: AlumnoHoja) -> None:
+        # Actualiza o agrega en el buffer de resultados
+        pagina_actual = resultado.pagina
+        for idx, existente in enumerate(self.resultados):
+            try:
+                if int(existente.pagina) == int(pagina_actual):
+                    self.resultados[idx] = resultado
+                    break
+            except (TypeError, ValueError):
+                continue
+        else:
+            self.resultados.append(resultado)
+
+        dni_norm = (resultado.dni or "").strip()
+        match = None
+        if dni_norm:
+            match = next(
+                (item for item in self.evaluacion_detalle if (item.get("dni") or "").strip() == dni_norm),
+                None,
+            )
+
+        if match:
+            match["pagina"] = resultado.pagina
+            self.resultados_por_dni[dni_norm] = resultado
+            self._update_student_row_page(dni_norm, resultado.pagina)
+            self._remove_not_found_by_page(resultado.pagina)
+        else:
+            existente_nf = next(
+                (
+                    nf
+                    for nf in self.resultados_no_asignados
+                    if str(nf.pagina) == str(resultado.pagina)
+                    and (nf.dni or "").strip() == dni_norm
+                ),
+                None,
+            )
+            if existente_nf is None:
+                self.resultados_no_asignados.append(resultado)
+                self._add_not_found_row(resultado)
+
+        try:
+            pagina_int = int(pagina_actual)
+        except (TypeError, ValueError):
+            pagina_int = None
+        if pagina_int is not None:
+            self._resaltar_pagina_en_tablas(pagina_int)
+        self._refresh_missing_page_nav()
+
+    def _update_student_row_page(self, dni: str, pagina: object) -> None:
+        if not dni:
+            return
+        self._updating_students_table = True
+        try:
+            for row in range(self.table_students.rowCount()):
+                dni_item = self.table_students.item(row, self.STUDENT_COL_DNI)
+                if not dni_item or dni_item.text().strip() != dni:
+                    continue
+                pagina_item = self.table_students.item(row, self.STUDENT_COL_PAGINA)
+                if pagina_item is None:
+                    pagina_item = QTableWidgetItem(str(pagina))
+                    self.table_students.setItem(row, self.STUDENT_COL_PAGINA, pagina_item)
+                else:
+                    pagina_item.setText(str(pagina))
+                break
+        finally:
+            self._updating_students_table = False
+
+    def _remove_not_found_by_page(self, pagina: object) -> None:
+        try:
+            pagina_int = int(pagina)
+        except (TypeError, ValueError):
+            pagina_int = None
+
+        self.resultados_no_asignados = [
+            r for r in self.resultados_no_asignados if str(r.pagina) != str(pagina)
+        ]
+
+        self._sincronizando_no_encontrados = True
+        try:
+            for row in range(self.table_not_found.rowCount()):
+                item = self.table_not_found.item(row, 0)
+                if not item:
+                    continue
+                if pagina_int is not None:
+                    try:
+                        if int(item.text()) != pagina_int:
+                            continue
+                    except ValueError:
+                        continue
+                elif item.text().strip() != str(pagina):
+                    continue
+                self.table_not_found.removeRow(row)
+                break
+        finally:
+            self._sincronizando_no_encontrados = False
+
+    def _add_not_found_row(self, resultado: AlumnoHoja) -> None:
+        self._sincronizando_no_encontrados = True
+        try:
+            row = self.table_not_found.rowCount()
+            self.table_not_found.insertRow(row)
+            pagina_item = QTableWidgetItem(str(resultado.pagina))
+            pagina_item.setData(Qt.ItemDataRole.UserRole, resultado)
+            pagina_item.setFlags(pagina_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+            dni_item = QTableWidgetItem(resultado.dni)
+            dni_item.setData(Qt.ItemDataRole.UserRole, resultado)
+            self.table_not_found.setItem(row, 0, pagina_item)
+            self.table_not_found.setItem(row, 1, dni_item)
+        finally:
+            self._sincronizando_no_encontrados = False
 
     def _on_not_found_selected(self) -> None:
         if self._syncing_selection:

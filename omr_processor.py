@@ -19,7 +19,7 @@ Reglas de negocio importantes:
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-from typing import List, Sequence
+from typing import Callable, List, Optional, Sequence
 
 import cv2  # type: ignore
 import fitz  # PyMuPDF
@@ -765,6 +765,7 @@ def procesar_pdf(
     cache_dir: str | Path | None = None,
     config: OMRConfig | None = None,
     progress_callback: Optional[Callable[[int, int], None]] = None,
+    result_callback: Optional[Callable[[AlumnoHoja, List[AlumnoHoja]], None]] = None,
 ) -> List[AlumnoHoja]:
     """Procesa todas las páginas de un PDF y devuelve una lista de AlumnoHoja."""
 
@@ -854,6 +855,12 @@ def procesar_pdf(
                 imagen_path=img_path,
             )
         )
+        if result_callback is not None:
+            try:
+                result_callback(resultados[-1], resultados)
+            except Exception:
+                # Continuar procesando aunque falle el callback de UI.
+                pass
 
         if progress_callback is not None:
             progress_callback(index, total_paginas)
