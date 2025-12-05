@@ -11,7 +11,7 @@ from datetime import date, datetime
 from time import timezone
 
 from pathlib import Path
-from typing import Dict, List, Optional, Set, Tuple
+from typing import Callable, Dict, List, Optional, Set, Tuple
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
@@ -120,6 +120,12 @@ class MainWindow(QMainWindow):
         self.evaluaciones: List[dict] = []
         self.evaluacion_detalle: List[dict] = []
         self._default_status_style = self.statusBar().styleSheet()
+        self._progress_status_style = (
+            "background-color: #fee2e2; color: #991b1b; font-weight: 600;"
+        )
+        self._missing_page_rows: List[int] = []
+        self._missing_nav_index = -1
+        self._updating_students_table = False
         self._pdf_doc: fitz.Document | None = None
         self._current_page = 1
         self._zoom_factor = 1.0
@@ -158,6 +164,7 @@ class MainWindow(QMainWindow):
         self._brand_logo_path = Path(__file__).parent / "mi_app" / "assets" / "logo.png"
 
         self._build_ui()
+        self._refresh_missing_page_nav()
         self._apply_audit_preferences(show_message=False)
         self._reset_pdf_state()
         self._load_evaluaciones()
@@ -324,6 +331,40 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(10, 10, 10, 10)
         left_layout.setSpacing(8)
+
+        self.missing_page_bar = QWidget()
+        self.missing_page_bar.setObjectName("missingPageBar")
+        missing_layout = QHBoxLayout(self.missing_page_bar)
+        missing_layout.setContentsMargins(8, 6, 8, 6)
+        missing_layout.setSpacing(6)
+
+        self.lbl_missing_page = QLabel("No Encontrados: 0")
+        self.lbl_missing_page.setObjectName("missingPageLabel")
+
+        self.btn_missing_prev = QToolButton()
+        self.btn_missing_prev.setObjectName("missingNavButton")
+        self.btn_missing_prev.setAutoRaise(True)
+        self.btn_missing_prev.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowLeft)
+        )
+        self.btn_missing_prev.setIconSize(QSize(10, 10))
+        self.btn_missing_prev.setToolTip("Ir al alumno anterior no encontrado")
+
+        self.btn_missing_next = QToolButton()
+        self.btn_missing_next.setObjectName("missingNavButton")
+        self.btn_missing_next.setAutoRaise(True)
+        self.btn_missing_next.setIcon(
+            self.style().standardIcon(QStyle.StandardPixmap.SP_ArrowRight)
+        )
+        self.btn_missing_next.setIconSize(QSize(10, 10))
+        self.btn_missing_next.setToolTip("Ir al siguiente alumno no encontrado")
+
+        missing_layout.addWidget(self.lbl_missing_page)
+        missing_layout.addStretch(1)
+        missing_layout.addWidget(self.btn_missing_prev)
+        missing_layout.addWidget(self.btn_missing_next)
+
+        left_layout.addWidget(self.missing_page_bar)
 
         self.table_students = QTableWidget(0, 6)
         self.table_students.setHorizontalHeaderLabels(
@@ -657,6 +698,28 @@ class MainWindow(QMainWindow):
                 border-radius: 10px;
                 border: 1px solid #f8c2c8;
             }
+            QWidget#missingPageBar {
+                background-color: #fff7f7;
+                border: 1px solid #fecdd3;
+                border-radius: 8px;
+                padding: 4px 6px;
+            }
+            QLabel#missingPageLabel {
+                color: #991b1b;
+                font-weight: 700;
+            }
+            QToolButton#missingNavButton {
+                background-color: #fff;
+                border: 1px solid #fecdd3;
+                border-radius: 6px;
+                color: #7f1d1d;
+                padding: 3px 6px;
+                min-width: 18px;
+            }
+            QToolButton#missingNavButton:hover {
+                background-color: #fff1f2;
+                border-color: #fb7185;
+            }
             QToolButton#navToolButton,
             QToolButton#zoomToolButton,
             QToolButton#resetZoomToolButton {
@@ -823,6 +886,7 @@ class MainWindow(QMainWindow):
         self.btn_register.clicked.connect(self._on_register_responses)
         self.audit_checkbox.toggled.connect(self._on_audit_toggle)
         self.table_students.itemSelectionChanged.connect(self._on_student_selected)
+        self.table_students.itemChanged.connect(self._on_student_item_changed)
         self.table_not_found.itemSelectionChanged.connect(
             self._on_not_found_selected
         )
@@ -832,6 +896,8 @@ class MainWindow(QMainWindow):
         )
         self.combo_secciones.currentIndexChanged.connect(self._on_seccion_changed)
         self.table_not_found.itemChanged.connect(self._on_not_found_item_changed)
+        self.btn_missing_prev.clicked.connect(self._on_missing_prev)
+        self.btn_missing_next.clicked.connect(self._on_missing_next)
         self.btn_prev_page.clicked.connect(self._on_prev_page)
         self.btn_next_page.clicked.connect(self._on_next_page)
         self.btn_zoom_in.clicked.connect(self._on_zoom_in)
@@ -925,13 +991,22 @@ class MainWindow(QMainWindow):
 
         self._process_thread.start()
 
+    def _show_progress_feedback(self, label: str, percent: int) -> None:
+        clamped_value = max(0, min(100, percent))
+        self._progress_bar.setValue(clamped_value)
+        if not self._progress_bar.isVisible():
+            self._progress_bar.setVisible(True)
+        self.statusBar().setStyleSheet(self._progress_status_style)
+        self.statusBar().showMessage(f"{label} {clamped_value}%", 0)
+
+    def _hide_progress_feedback(self, *, clear_message: bool = False) -> None:
+        if clear_message:
+            self.statusBar().clearMessage()
+        self.statusBar().setStyleSheet(self._default_status_style)
+        self._progress_bar.setVisible(False)
+
     def _preparar_estado_procesamiento(self) -> None:
-        self._progress_bar.setValue(0)
-        self._progress_bar.setVisible(True)
-        self.statusBar().setStyleSheet(
-            "background-color: #fee2e2; color: #991b1b; font-weight: 600;"
-        )
-        self.statusBar().showMessage("Procesando... 0%", 0)
+        self._show_progress_feedback("Procesando...", 0)
         self._toggle_controls(False)
 
     def _toggle_controls(self, enabled: bool) -> None:
@@ -1001,11 +1076,10 @@ class MainWindow(QMainWindow):
         self._finalizar_estado_procesamiento()
 
     def _update_progress(self, value: int) -> None:
-        clamped_value = max(0, min(100, value))
-        self._progress_bar.setValue(clamped_value)
-        if not self._progress_bar.isVisible():
-            self._progress_bar.setVisible(True)
-        self.statusBar().showMessage(f"Procesando... {clamped_value}%", 0)
+        self._show_progress_feedback("Procesando...", value)
+
+    def _update_register_progress(self, value: int) -> None:
+        self._show_progress_feedback("Registrando respuestas...", value)
 
     def _update_processing_page(self, current: int, total: int) -> None:
         """Muestra en el visor la p��gina del PDF que se est�� procesando."""
@@ -1018,8 +1092,7 @@ class MainWindow(QMainWindow):
 
     def _finalizar_estado_procesamiento(self) -> None:
         self._toggle_controls(True)
-        self.statusBar().setStyleSheet(self._default_status_style)
-        self._progress_bar.setVisible(False)
+        self._hide_progress_feedback()
 
     def _limpiar_hilo_proceso(self) -> None:
         if self._process_worker:
@@ -1092,7 +1165,86 @@ class MainWindow(QMainWindow):
         if not selected:
             return
         row = selected[0].row()
+        self._refresh_missing_page_nav(selected_row=row)
         self._mostrar_detalle_por_indice(row)
+
+    def _on_student_item_changed(self, item: QTableWidgetItem) -> None:
+        if self._updating_students_table:
+            return
+        if item.column() != self.STUDENT_COL_PAGINA:
+            return
+        self._refresh_missing_page_nav(selected_row=item.row())
+
+    def _on_missing_prev(self) -> None:
+        self._go_to_missing_row(-1)
+
+    def _on_missing_next(self) -> None:
+        self._go_to_missing_row(1)
+
+    def _calculate_missing_page_rows(self) -> List[int]:
+        missing: List[int] = []
+        for row in range(self.table_students.rowCount()):
+            pagina_item = self.table_students.item(row, self.STUDENT_COL_PAGINA)
+            if pagina_item is None:
+                missing.append(row)
+                continue
+            texto = pagina_item.text().strip()
+            if not texto:
+                missing.append(row)
+                continue
+            try:
+                int(texto)
+            except ValueError:
+                missing.append(row)
+        return missing
+
+    def _refresh_missing_page_nav(self, selected_row: int | None = None) -> None:
+        self._missing_page_rows = self._calculate_missing_page_rows()
+        count = len(self._missing_page_rows)
+
+        if count == 0:
+            self._missing_nav_index = -1
+            self.lbl_missing_page.setText("No Encontrados: 0")
+            self.btn_missing_prev.setEnabled(False)
+            self.btn_missing_next.setEnabled(False)
+            return
+
+        if selected_row is not None and selected_row in self._missing_page_rows:
+            self._missing_nav_index = self._missing_page_rows.index(selected_row)
+        elif self._missing_nav_index < 0:
+            self._missing_nav_index = 0
+        else:
+            self._missing_nav_index = min(self._missing_nav_index, count - 1)
+
+        position_text = f" · {self._missing_nav_index + 1}/{count}"
+        self.lbl_missing_page.setText(f"No Encontrados: {count}{position_text}")
+        self.btn_missing_prev.setEnabled(True)
+        self.btn_missing_next.setEnabled(True)
+
+    def _select_student_row(self, row: int) -> None:
+        if row < 0 or row >= self.table_students.rowCount():
+            return
+        self._syncing_selection = True
+        try:
+            self.table_students.selectRow(row)
+            item = self.table_students.item(row, 0)
+            if item:
+                self.table_students.scrollToItem(item)
+        finally:
+            self._syncing_selection = False
+        self._mostrar_detalle_por_indice(row)
+
+    def _go_to_missing_row(self, step: int) -> None:
+        if not self._missing_page_rows:
+            return
+        if self._missing_nav_index < 0:
+            self._missing_nav_index = 0
+        else:
+            total = len(self._missing_page_rows)
+            self._missing_nav_index = (self._missing_nav_index + step) % total
+        target_row = self._missing_page_rows[self._missing_nav_index]
+        self._select_student_row(target_row)
+        self._refresh_missing_page_nav(selected_row=target_row)
 
     def _on_not_found_selected(self) -> None:
         if self._syncing_selection:
@@ -1378,6 +1530,7 @@ class MainWindow(QMainWindow):
 
     # ------------------------------------------------------------- helpers UI
     def _llenar_tabla_evaluacion(self, alumnos: List[dict]) -> None:
+        self._updating_students_table = True
         self.table_students.setRowCount(0)
         for alumno in alumnos:
             row = self.table_students.rowCount()
@@ -1408,6 +1561,8 @@ class MainWindow(QMainWindow):
             self.table_students.setCellWidget(
                 row, self.STUDENT_COL_ACCION, self._crear_boton_eliminar()
             )
+        self._updating_students_table = False
+        self._refresh_missing_page_nav()
         if alumnos:
             self.table_students.selectRow(0)
 
@@ -1440,6 +1595,7 @@ class MainWindow(QMainWindow):
         self.table_answers.setRowCount(0)
         self.image_label.clear()
         self.image_label.setText("Seleccione un alumno")
+        self._refresh_missing_page_nav()
 
     def _integrar_resultados_en_tablas(self) -> None:
         alumnos_por_dni = {
@@ -1546,6 +1702,7 @@ class MainWindow(QMainWindow):
             self.table_students.selectRow(min(fila, self.table_students.rowCount() - 1))
         else:
             self._mostrar_detalle_alumno(None)
+        self._refresh_missing_page_nav()
 
     def _on_not_found_item_changed(self, item: QTableWidgetItem) -> None:
         if self._sincronizando_no_encontrados:
@@ -1636,6 +1793,8 @@ class MainWindow(QMainWindow):
             return
 
         self.btn_register.setEnabled(False)
+        final_status_message: Optional[str] = None
+        self._update_register_progress(0)
         try:
             existen_previas = self._existen_respuestas_previas(
                 int(evaluacion_data["id"])
@@ -1656,7 +1815,9 @@ class MainWindow(QMainWindow):
                 if not self._eliminar_respuestas_previas(int(evaluacion_data["id"])):
                     return
 
-            registrados = self._enviar_respuestas(payload)
+            registrados = self._enviar_respuestas(
+                payload, progress_callback=self._update_register_progress
+            )
             if registrados == 0:
                 QMessageBox.warning(
                     self,
@@ -1681,8 +1842,13 @@ class MainWindow(QMainWindow):
                     advertencias
                 )
             QMessageBox.information(self, "Registro finalizado", resumen)
+            self._update_register_progress(100)
+            final_status_message = "Registro de respuestas finalizado"
         finally:
             self.btn_register.setEnabled(True)
+            self._hide_progress_feedback(clear_message=True)
+            if final_status_message:
+                self.statusBar().showMessage(final_status_message, 5000)
 
     def _validar_tabla_alumnos(self) -> bool:
         valido = True
@@ -1849,7 +2015,9 @@ class MainWindow(QMainWindow):
             )
             return False
 
-    def _enviar_respuestas(self, payload: List[dict]) -> int:
+    def _enviar_respuestas(
+        self, payload: List[dict], progress_callback: Callable[[int], None] | None = None
+    ) -> int:
         """
         Envía las respuestas en lotes por alumno al endpoint Batch:
         POST /api/EvaluacionRespuestums/Batch
@@ -1873,6 +2041,11 @@ class MainWindow(QMainWindow):
             return 0
 
         registrados = 0
+        total_alumnos = len(respuestas_por_alumno)
+        alumnos_procesados = 0
+
+        if progress_callback:
+            progress_callback(0)
 
         # 2) Mandamos un POST por alumno con la lista completa de sus respuestas
         for dni, respuestas in respuestas_por_alumno.items():
@@ -1890,6 +2063,10 @@ class MainWindow(QMainWindow):
 
                 # contamos cuántas respuestas se registraron en este lote
                 registrados += len(respuestas)
+                alumnos_procesados += 1
+                if progress_callback and total_alumnos:
+                    avance = int((alumnos_procesados * 100) / total_alumnos)
+                    progress_callback(avance)
 
             except (HTTPError, URLError) as exc:
                 if isinstance(exc, HTTPError) and self._handle_auth_error(
@@ -1904,6 +2081,10 @@ class MainWindow(QMainWindow):
                 # puedes romper aquí o seguir con otros alumnos;
                 # por ahora rompemos para que el usuario vea el error pronto
                 break
+
+        if progress_callback and total_alumnos:
+            avance_final = int((alumnos_procesados * 100) / total_alumnos)
+            progress_callback(avance_final)
 
         return registrados
 
