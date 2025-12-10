@@ -89,9 +89,9 @@ class _ProcessWorker(QObject):
 class MainWindow(QMainWindow):
     """Ventana principal con estilo moderno y paneles divididos."""
 
-    API_BASE = "https://api.ceglumbreras.com"
+    #API_BASE = "https://api.ceglumbreras.com"
 
-    #API_BASE = "http://192.168.1.50:5000"
+    API_BASE = "http://192.168.1.50:5000"
 
     
     ALL_SECTIONS_KEY = "__all__"
